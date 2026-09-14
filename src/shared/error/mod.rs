@@ -16,6 +16,8 @@ pub enum AppError {
     Conflict(String),
     #[error("{0}")]
     Unprocessable(String),
+    #[error("terlalu banyak request")]
+    RateLimited,
     #[error("kesalahan internal")]
     Internal(String),
 }
@@ -28,6 +30,7 @@ impl AppError {
             AppError::NotFound(m) => (StatusCode::NOT_FOUND, "not_found", m.clone()),
             AppError::Conflict(m) => (StatusCode::CONFLICT, "conflict", m.clone()),
             AppError::Unprocessable(m) => (StatusCode::UNPROCESSABLE_ENTITY, "unprocessable", m.clone()),
+            AppError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited", "terlalu banyak request, coba lagi nanti".into()),
             AppError::Internal(_detail) => (StatusCode::INTERNAL_SERVER_ERROR, "internal", "kesalahan internal".into()),
         }
     }

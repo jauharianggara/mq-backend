@@ -27,6 +27,7 @@ jsonwebtoken = "9"
 
 # Util
 thiserror = "2"
+sha2 = "0.10"
 validator = { version = "0.20", features = ["derive"] }
 dotenvy = "0.15"
 config = { version = "0.15", default-features = false, features = ["toml"] }
@@ -34,7 +35,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 # Cache & rate-limit: IN-PROCESS (keputusan #13 - redis = optional feature, BUKAN default)
-moka = { version = "0.12", features = ["future"] }
+moka = { version = "0.12", features = ["future", "sync"] }
 governor = "0.10"
 
 # Object storage (MinIO via NSSM / R2)

@@ -1,7 +1,14 @@
 mod config;
+mod infrastructure;
+mod middleware;
+mod modules;
 mod shared;
+mod state;
 
-use axum::{routing::get, Router};
+use axum::routing::get;
+use axum::Json;
+use modules::auth;
+use state::AppState;
 
 #[tokio::main]
 async fn main() {
@@ -15,18 +22,35 @@ async fn main() {
 
     let cfg = config::AppConfig::from_env();
     let addr = cfg.listen_addr;
+
+    let database_url = cfg
+        .database_url
+        .clone()
+        .unwrap_or_else(|| panic!("DATABASE_URL wajib untuk menjalankan server"));
+    let pool = infrastructure::database::build_pool(&database_url).await;
+    let state = AppState::new(pool, &cfg);
+
     tracing::info!("MQ backend starting on http://{addr}");
 
-    let app = Router::new().route("/healthz", get(healthz));
+    let app = axum::Router::new()
+        .route("/healthz", get(healthz))
+        .nest("/api/v1", auth::routes())
+        .fallback(not_found)
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|e| panic!("gagal bind {addr}: {e}"));
-    axum::serve(listener, app)
-        .await
-        .expect("server error");
+    axum::serve(listener, app).await.expect("server error");
 }
 
-async fn healthz() -> axum::Json<serde_json::Value> {
+async fn healthz() -> Json<serde_json::Value> {
     shared::response::ok(serde_json::json!({ "status": "ok" }))
+}
+
+async fn not_found() -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    (
+        axum::http::StatusCode::NOT_FOUND,
+        Json(serde_json::json!({ "code": "not_found", "message": "endpoint tidak ada" })),
+    )
 }
