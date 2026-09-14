@@ -1,7 +1,9 @@
 pub mod auth;
+pub mod khatmil;
 pub mod learning;
 pub mod media;
 pub mod memorization;
+pub mod questions;
 pub mod quran;
 pub mod ustadz;
 pub mod users;

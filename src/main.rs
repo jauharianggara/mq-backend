@@ -1,6 +1,6 @@
 use axum::routing::get;
 use axum::Json;
-use mq_backend_lib::modules::{auth, learning, media, memorization, quran, ustadz, users};
+use mq_backend_lib::modules::{auth, khatmil, learning, media, memorization, questions, quran, ustadz, users};
 use mq_backend_lib::state::AppState;
 
 #[tokio::main]
@@ -23,7 +23,7 @@ async fn main() {
 
     let app = axum::Router::new()
         .route("/healthz", get(healthz))
-        .nest("/api/v1", auth::routes().merge(users::routes()).merge(media::routes()).merge(quran::routes()).merge(learning::routes()).merge(ustadz::routes()).merge(memorization::routes()))
+        .nest("/api/v1", auth::routes().merge(users::routes()).merge(media::routes()).merge(quran::routes()).merge(learning::routes()).merge(ustadz::routes()).merge(memorization::routes()).merge(khatmil::routes()).merge(questions::routes()))
         .fallback(not_found)
         .with_state(state);
 

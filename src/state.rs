@@ -17,6 +17,10 @@ pub struct AppState {
     pub cache_str: Cache<&'static str, std::sync::Arc<String>>,
     /// gate resend-verification 60s per user (in-process — keputusan #13)
     resend_gate_cache: Cache<i64, ()>,
+    /// gate klaim juz 5s per user
+    khatmil_claim_cache: Cache<i64, ()>,
+    /// gate progress khatmil 30s per user (keputusan #13 — rate-limit di service, bukan DB)
+    khatmil_progress_cache: Cache<i64, ()>,
 }
 
 impl AppState {
@@ -42,6 +46,12 @@ impl AppState {
             resend_gate_cache: Cache::builder()
                 .time_to_live(std::time::Duration::from_secs(60))
                 .build(),
+            khatmil_claim_cache: Cache::builder()
+                .time_to_live(std::time::Duration::from_secs(5))
+                .build(),
+            khatmil_progress_cache: Cache::builder()
+                .time_to_live(std::time::Duration::from_secs(30))
+                .build(),
             cache_str: Cache::builder()
                 .time_to_live(std::time::Duration::from_secs(24 * 3600))
                 .build(),
@@ -53,11 +63,20 @@ impl AppState {
     }
 
     /// true = boleh kirim (belum pernah dalam 60s); false = rate-limited
-    pub fn resend_gate(&self, user_id: &i64) -> bool {
-        if self.resend_gate_cache.contains_key(user_id) {
+    fn gate(cache: &Cache<i64, ()>, user_id: &i64) -> bool {
+        if cache.contains_key(user_id) {
             return false;
         }
-        self.resend_gate_cache.insert(*user_id, ());
+        cache.insert(*user_id, ());
         true
+    }
+    pub fn resend_gate(&self, user_id: &i64) -> bool {
+        Self::gate(&self.resend_gate_cache, user_id)
+    }
+    pub fn khatmil_claim_gate(&self, user_id: &i64) -> bool {
+        Self::gate(&self.khatmil_claim_cache, user_id)
+    }
+    pub fn khatmil_progress_gate(&self, user_id: &i64) -> bool {
+        Self::gate(&self.khatmil_progress_cache, user_id)
     }
 }
