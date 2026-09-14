@@ -1,0 +1,9 @@
+/target
+.env
+.env.*
+!.env.example
+*.log
+run-*.log
+run-*.err.log
+# Windows
+Thumbs.db
