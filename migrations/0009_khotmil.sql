@@ -1,98 +1,115 @@
 -- =============================================================
--- MQ Digital Platform — 0009 Khotmil Qur'an Online
+-- MQ Digital Platform — 0009 (MySQL) Khatmil Qur'an Online
 --
 -- Definisi operasional "JUZ SELESAI" (anti-gaming klaim khataman):
 --   1. pages_read  >= 20   (1 juz ~ 20-22 halaman mushaf), DAN
 --   2. minutes_read >= campaign.min_minutes_per_juz (default 30 menit), DAN
---   3. verification = AUTO_VERIFIED (kalau campaign tidak minta verifikasi
---      manual) atau VERIFIED oleh ustadz/pengurus.
--- Hanya juz dengan status COMPLETED + terverifikasi yang dihitung
--- menuju khataman. Rate-limit update progress ditegakkan di service
--- (Redis-based), bukan di DB.
+--   3. verification: SELF_REPORTED / SYSTEM_VERIFIED (memenuhi rule otomatis,
+--      BUKAN bukti objektif) / MANUAL_VERIFIED oleh ustadz/pengurus.
+--   Hanya juz COMPLETED + terverifikasi yang dihitung menuju khataman.
+--   Rate-limit update progress ditegakkan di service (in-process), bukan DB.
 --
--- Integritas pembagian juz: partial UNIQUE INDEX pada (campaign_id, juz)
--- untuk assignment AKTIF = jaminan level database bahwa satu juz hanya
--- dipegang satu orang aktif per campaign, di luar transaksi aplikasi.
+-- Integritas pembagian juz: partial unique PG (campaign_id, juz) WHERE aktif
+--   -> MySQL: kolom generated `active_marker` (1=ASSIGNED/IN_PROGRESS,
+--   NULL=sudah lepas) + UNIQUE multi-kolom (MySQL mengabaikan NULL).
+--   => SATU pemegang aktif per juz per campaign, dijamin level database.
 -- =============================================================
 
 CREATE TABLE khatmil_campaigns (
-    id                          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    slug                        TEXT NOT NULL UNIQUE,
-    name                        TEXT NOT NULL,       -- "Khataman Qur'an Nasional #001"
+    id                          BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    slug                        VARCHAR(200) NOT NULL UNIQUE,
+    name                        VARCHAR(255) NOT NULL,   -- "Khataman Qur'an Nasional #001"
     description                 TEXT,
-    mode                        campaign_mode   NOT NULL DEFAULT 'PARALLEL',
-    status                      campaign_status NOT NULL DEFAULT 'DRAFT',
-    target_khataman             INTEGER NOT NULL DEFAULT 1,   -- 0 = tanpa target
-    period_start                DATE,
-    period_end                  DATE,
-    min_minutes_per_juz         SMALLINT NOT NULL DEFAULT 30 CHECK (min_minutes_per_juz BETWEEN 1 AND 600),
-    require_manual_verification BOOLEAN NOT NULL DEFAULT false,
-    max_participants            INTEGER,
-    created_by                  BIGINT NOT NULL REFERENCES users (id),
-    created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT khatmil_period_chk
-        CHECK (period_end IS NULL OR period_start IS NULL OR period_end >= period_start)
-);
+    mode                        VARCHAR(20)  NOT NULL DEFAULT 'PARALLEL',
+    status                      VARCHAR(30)  NOT NULL DEFAULT 'DRAFT',
+    target_khataman             INT NOT NULL DEFAULT 1,  -- 0 = tanpa target
+    period_start                DATE NULL,
+    period_end                  DATE NULL,
+    min_minutes_per_juz         SMALLINT NOT NULL DEFAULT 30,
+    require_manual_verification TINYINT(1) NOT NULL DEFAULT 0,
+    max_participants            INT NULL,
+    created_by                  BIGINT NOT NULL,
+    created_at                  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT kc_mode_chk   CHECK (mode IN ('PARALLEL','SEQUENTIAL')),
+    CONSTRAINT kc_status_chk CHECK (status IN ('DRAFT','SCHEDULED','ACTIVE','COMPLETED','CANCELLED')),
+    CONSTRAINT kc_minutes_chk CHECK (min_minutes_per_juz BETWEEN 1 AND 600),
+    CONSTRAINT kc_period_chk  CHECK (period_end IS NULL OR period_start IS NULL OR period_end >= period_start),
+    CONSTRAINT kc_creator_fk FOREIGN KEY (created_by) REFERENCES users (id)
+) ENGINE=InnoDB;
 
 CREATE TABLE khatmil_participants (
-    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    campaign_id BIGINT NOT NULL REFERENCES khatmil_campaigns (id) ON DELETE CASCADE,
-    user_id     BIGINT NOT NULL REFERENCES users (id),
-    joined_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (campaign_id, user_id)
-);
-
-CREATE INDEX khatmil_participants_user_idx ON khatmil_participants (user_id);
+    id          BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    campaign_id BIGINT NOT NULL,
+    user_id     BIGINT NOT NULL,
+    joined_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT kp_campaign_fk FOREIGN KEY (campaign_id) REFERENCES khatmil_campaigns (id) ON DELETE CASCADE,
+    CONSTRAINT kp_user_fk     FOREIGN KEY (user_id) REFERENCES users (id),
+    UNIQUE KEY kp_campaign_user_uq (campaign_id, user_id),
+    KEY khatmil_participants_user_idx (user_id)
+) ENGINE=InnoDB;
 
 CREATE TABLE khatmil_juz_assignments (
-    id             BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    campaign_id    BIGINT NOT NULL REFERENCES khatmil_campaigns (id) ON DELETE CASCADE,
-    participant_id BIGINT NOT NULL REFERENCES khatmil_participants (id) ON DELETE CASCADE,
-    juz            SMALLINT NOT NULL CHECK (juz BETWEEN 1 AND 30),
-    status         juz_status NOT NULL DEFAULT 'ASSIGNED',
-    assigned_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    due_at         TIMESTAMPTZ               -- dipakai mode SEQUENTIAL (giliran)
-);
-
--- Jaminan DB: satu juz hanya boleh punya SATU pemegang aktif per campaign.
--- Reassignment: tandai lama EXPIRED/REASSIGNED dulu, baru insert baru.
-CREATE UNIQUE INDEX khatmil_juz_active_uq
-    ON khatmil_juz_assignments (campaign_id, juz)
-    WHERE status IN ('ASSIGNED', 'IN_PROGRESS');
-
-CREATE INDEX khatmil_juz_participant_idx ON khatmil_juz_assignments (participant_id);
+    id             BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    campaign_id    BIGINT NOT NULL,
+    participant_id BIGINT NOT NULL,
+    juz            SMALLINT NOT NULL,
+    status         VARCHAR(30) NOT NULL DEFAULT 'ASSIGNED',
+    assigned_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    due_at         TIMESTAMP NULL,                    -- dipakai mode SEQUENTIAL (giliran)
+    -- Marker unik-aktif (turunan status; menggantikan partial unique PG):
+    active_marker  TINYINT GENERATED ALWAYS AS (
+                       CASE WHEN status IN ('ASSIGNED','IN_PROGRESS') THEN 1 ELSE NULL END
+                   ) STORED,
+    CONSTRAINT ka_juz_chk    CHECK (juz BETWEEN 1 AND 30),
+    CONSTRAINT ka_status_chk CHECK (status IN ('ASSIGNED','IN_PROGRESS','COMPLETED','EXPIRED','REASSIGNED')),
+    CONSTRAINT ka_campaign_fk    FOREIGN KEY (campaign_id) REFERENCES khatmil_campaigns (id) ON DELETE CASCADE,
+    CONSTRAINT ka_participant_fk FOREIGN KEY (participant_id) REFERENCES khatmil_participants (id) ON DELETE CASCADE,
+    -- SATU pemegang aktif per juz per campaign (NULL dilewati unique MySQL):
+    UNIQUE KEY khatmil_juz_active_uq (campaign_id, juz, active_marker),
+    KEY khatmil_juz_participant_idx (participant_id)
+) ENGINE=InnoDB;
 
 -- Rollup progress per assignment (diperbarui bersamaan dengan insert event,
 -- dalam satu transaksi service)
 CREATE TABLE khatmil_progress (
-    assignment_id BIGINT PRIMARY KEY REFERENCES khatmil_juz_assignments (id) ON DELETE CASCADE,
-    pages_read    SMALLINT NOT NULL DEFAULT 0 CHECK (pages_read  BETWEEN 0 AND 22),
-    minutes_read  SMALLINT NOT NULL DEFAULT 0 CHECK (minutes_read BETWEEN 0 AND 1440),
-    verification  verification_status NOT NULL DEFAULT 'PENDING',
-    verified_by   BIGINT REFERENCES users (id),
-    verified_at   TIMESTAMPTZ,
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+    assignment_id BIGINT NOT NULL PRIMARY KEY,
+    pages_read    SMALLINT NOT NULL DEFAULT 0,
+    minutes_read  SMALLINT NOT NULL DEFAULT 0,
+    verification  VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+    verified_by   BIGINT NULL,
+    verified_at   TIMESTAMP NULL,
+    updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT kg_pages_chk    CHECK (pages_read  BETWEEN 0 AND 22),
+    CONSTRAINT kg_minutes_chk  CHECK (minutes_read BETWEEN 0 AND 1440),
+    CONSTRAINT kg_verify_chk   CHECK (verification IN ('PENDING','SELF_REPORTED','AUTO_VERIFIED','SYSTEM_VERIFIED','VERIFIED','REJECTED')),
+    CONSTRAINT kg_assignment_fk FOREIGN KEY (assignment_id) REFERENCES khatmil_juz_assignments (id) ON DELETE CASCADE,
+    CONSTRAINT kg_verifier_fk   FOREIGN KEY (verified_by) REFERENCES users (id)
+) ENGINE=InnoDB;
 
 -- Event log append-only: sumber kebenaran audit progress
 CREATE TABLE khatmil_progress_events (
-    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    assignment_id BIGINT NOT NULL REFERENCES khatmil_juz_assignments (id) ON DELETE CASCADE,
-    user_id       BIGINT NOT NULL REFERENCES users (id),
-    pages_read    SMALLINT NOT NULL CHECK (pages_read  > 0),
-    minutes_read  SMALLINT NOT NULL CHECK (minutes_read > 0),
+    id            BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    assignment_id BIGINT NOT NULL,
+    user_id       BIGINT NOT NULL,
+    pages_read    SMALLINT NOT NULL,
+    minutes_read  SMALLINT NOT NULL,
     note          TEXT,
-    recorded_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE INDEX khatmil_progress_events_assign_idx ON khatmil_progress_events (assignment_id, recorded_at);
+    recorded_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT kge_pages_chk   CHECK (pages_read  > 0),
+    CONSTRAINT kge_minutes_chk CHECK (minutes_read > 0),
+    CONSTRAINT kge_assignment_fk FOREIGN KEY (assignment_id) REFERENCES khatmil_juz_assignments (id) ON DELETE CASCADE,
+    CONSTRAINT kge_user_fk       FOREIGN KEY (user_id) REFERENCES users (id),
+    KEY khatmil_progress_events_assign_idx (assignment_id, recorded_at)
+) ENGINE=InnoDB;
 
 -- Satu khataman = 30 juz campaign tuntas & terverifikasi (siklus campaign)
 CREATE TABLE khatmil_completions (
-    id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    campaign_id  BIGINT NOT NULL REFERENCES khatmil_campaigns (id) ON DELETE CASCADE,
-    cycle        SMALLINT NOT NULL CHECK (cycle >= 1),
-    completed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (campaign_id, cycle)
-);
+    id           BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    campaign_id  BIGINT NOT NULL,
+    cycle        SMALLINT NOT NULL,
+    completed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT kcm_cycle_chk CHECK (cycle >= 1),
+    CONSTRAINT kcm_campaign_fk FOREIGN KEY (campaign_id) REFERENCES khatmil_campaigns (id) ON DELETE CASCADE,
+    UNIQUE KEY kcm_campaign_cycle_uq (campaign_id, cycle)
+) ENGINE=InnoDB;

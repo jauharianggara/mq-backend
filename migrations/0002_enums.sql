@@ -1,42 +1,32 @@
 -- =============================================================
--- MQ Digital Platform — 0002 Enum types
--- Semua enum didefinisikan di satu file agar urutan migration
--- tidak saling menunggu. Menambah nilai enum = ALTER TYPE ... ADD VALUE.
+-- MQ Digital Platform — 0002 (MySQL) — registry nilai domain
+-- Asal: PostgreSQL 0002 enums (CREATE TYPE ... AS ENUM).
+-- MySQL: nilai enum PG di-inline menjadi VARCHAR + CHECK pada tabel
+--        (lihat masing-masing file tabel). File ini = DOKUMENTASI
+--        pusat nilai yang valid (jangan lupa sinkron CHECK saat menambah).
+-- Daftar domain (kolom VARCHAR(...) + CHECK di tabel):
+--   account_type          SANTRI,UMUM,PENGURUS,ORANG_TUA,DONATUR
+--   user_status           PENDING_VERIFICATION,ACTIVE,SUSPENDED,DEACTIVATED,DELETED*
+--   gender                MALE,FEMALE
+--   device_platform       ANDROID,IOS,WEB
+--   media_kind            AUDIO,IMAGE,VIDEO,DOCUMENT
+--   media_status          UPLOADING,READY,FAILED
+--   submission_status     PENDING,IN_REVIEW,PASSED,REVISION,REJECTED
+--   review_verdict        PASSED,REVISION,REJECTED
+--   campaign_mode         PARALLEL,SEQUENTIAL
+--   campaign_status       DRAFT,SCHEDULED,ACTIVE,COMPLETED,CANCELLED
+--   juz_status            ASSIGNED,IN_PROGRESS,COMPLETED,EXPIRED,REASSIGNED
+--   verification_status   PENDING,AUTO_VERIFIED,VERIFIED,REJECTED
+--   question_status       PENDING_MODERATION,QUEUED,ASSIGNED,ANSWERED,CLOSED,REJECTED,PUBLISHED,PUBLISH_REQUESTED*
+--   message_type          TEXT,VOICE,IMAGE,FILE
+--   ustadz_assignment_status ASSIGNED,ACCEPTED,DECLINED,REASSIGNED
+--   notification_channel  IN_APP,PUSH,EMAIL,WHATSAPP
+--   material_status       DRAFT,PUBLISHED,ARCHIVED
+--   article_status        DRAFT,PUBLISHED,ARCHIVED
+--   banner_position       HOME_TOP,HOME_MID,KHOTMIL_TOP
+--   announcement_level    INFO,WARNING,CRITICAL
+--   job_status            PENDING,RUNNING,DONE,FAILED,DEAD
+-- (*penambahan v11: DELETED utk delete-account; PUBLISH_REQUESTED utk moderation state machine)
 -- =============================================================
 
--- Identitas
-CREATE TYPE account_type  AS ENUM ('SANTRI', 'UMUM', 'PENGURUS', 'ORANG_TUA', 'DONATUR'); -- extensible
-CREATE TYPE user_status   AS ENUM ('PENDING_VERIFICATION', 'ACTIVE', 'SUSPENDED', 'DEACTIVATED');
-CREATE TYPE gender        AS ENUM ('MALE', 'FEMALE');
-CREATE TYPE device_platform AS ENUM ('ANDROID', 'IOS', 'WEB');
-
--- Media / object storage (R2 / MinIO)
-CREATE TYPE media_kind   AS ENUM ('AUDIO', 'IMAGE', 'VIDEO', 'DOCUMENT');
-CREATE TYPE media_status AS ENUM ('UPLOADING', 'READY', 'FAILED');
-
--- Hafalan / setoran
-CREATE TYPE submission_status AS ENUM ('PENDING', 'IN_REVIEW', 'PASSED', 'REVISION', 'REJECTED');
-CREATE TYPE review_verdict    AS ENUM ('PASSED', 'REVISION', 'REJECTED');
-
--- Khotmil Qur'an
-CREATE TYPE campaign_mode       AS ENUM ('PARALLEL', 'SEQUENTIAL');   -- PARALLEL = tiap orang baca juznya sendiri; SEQUENTIAL = giliran
-CREATE TYPE campaign_status     AS ENUM ('DRAFT', 'SCHEDULED', 'ACTIVE', 'COMPLETED', 'CANCELLED');
-CREATE TYPE juz_status          AS ENUM ('ASSIGNED', 'IN_PROGRESS', 'COMPLETED', 'EXPIRED', 'REASSIGNED');
-CREATE TYPE verification_status AS ENUM ('PENDING', 'AUTO_VERIFIED', 'VERIFIED', 'REJECTED');
-
--- Tanya Ustadz
-CREATE TYPE question_status           AS ENUM ('PENDING_MODERATION', 'QUEUED', 'ASSIGNED', 'ANSWERED', 'CLOSED', 'REJECTED', 'PUBLISHED');
-CREATE TYPE message_type              AS ENUM ('TEXT', 'VOICE', 'IMAGE', 'FILE');
-CREATE TYPE ustadz_assignment_status  AS ENUM ('ASSIGNED', 'ACCEPTED', 'DECLINED', 'REASSIGNED');
-
--- Notifikasi
-CREATE TYPE notification_channel AS ENUM ('IN_APP', 'PUSH', 'EMAIL', 'WHATSAPP');
-
--- CMS
-CREATE TYPE material_status     AS ENUM ('DRAFT', 'PUBLISHED', 'ARCHIVED');
-CREATE TYPE article_status      AS ENUM ('DRAFT', 'PUBLISHED', 'ARCHIVED');
-CREATE TYPE banner_position     AS ENUM ('HOME_TOP', 'HOME_MID', 'KHOTMIL_TOP');
-CREATE TYPE announcement_level  AS ENUM ('INFO', 'WARNING', 'CRITICAL');
-
--- Background jobs (Postgres-backed queue, worker apalis / loop sqlx)
-CREATE TYPE job_status AS ENUM ('PENDING', 'RUNNING', 'DONE', 'FAILED', 'DEAD');
+-- no-op (nilai di-CHECK per tabel)

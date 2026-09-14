@@ -1,107 +1,113 @@
 -- =============================================================
--- MQ Digital Platform — 0006 Quran Reference (IMPORT-ONLY)
--- Data ini adalah REFERENCE DATA, bukan konten CMS.
--- TIDAK ADA CRUD admin untuk tabel di bawah ini; diisi via seed/import:
+-- MQ Digital Platform — 0006 (MySQL) Quran Reference (IMPORT-ONLY)
+-- Data ini REFERENCE DATA, bukan konten CMS. TIDAK ADA CRUD admin;
+-- diisi via scripts/import_quran (Task 1.2):
 --   - quran_surahs / quran_ayahs : tanzil.net (teks Uthmani + Imlaei)
 --   - quran_translations         : Kemenag (via quran.com API v4 / dataset publik)
 --   - quran_audio_files          : metadata audio per-ayat Murattal (everyayah.com) — file di CDN
---   - quran_words                : word-by-word (format QuranWBW), opsional tapi
---                                  direkomendasikan di-import sejak awal karena jadi
---                                  fondasi WBW + tajwid per-token di Phase 2.
--- Upsert berdasarkan natural key (UNIQUE constraint), aman dijalankan ulang.
+--   - quran_words                : word-by-word + arti (format QuranWBW) — di-import sejak awal (v8),
+--                                  fondasi WBW + tajwid per-token Phase 2; TANPA UI di MVP
+-- Upsert berdasarkan natural key (UNIQUE), aman dijalankan ulang.
 -- =============================================================
 
 CREATE TABLE quran_surahs (
-    id          SMALLINT PRIMARY KEY CHECK (id BETWEEN 1 AND 114),  -- natural key
+    id          SMALLINT NOT NULL PRIMARY KEY,       -- natural key 1..114
     name_arabic TEXT NOT NULL,
-    name_latin  TEXT NOT NULL,
-    name_id     TEXT NOT NULL,                -- 'Al-Fatihah'
+    name_latin  VARCHAR(100) NOT NULL,
+    name_id     VARCHAR(100) NOT NULL,               -- 'Al-Fatihah'
     ayah_count  SMALLINT NOT NULL,
-    revelation  revelation_type NOT NULL
-);
+    revelation  VARCHAR(20) NOT NULL,
+    CONSTRAINT qs_id_chk CHECK (id BETWEEN 1 AND 114),
+    CONSTRAINT qs_revelation_chk CHECK (revelation IN ('MAKKAH','MADINAH'))
+) ENGINE=InnoDB;
 
 CREATE TABLE quran_juzs (
-    id            SMALLINT PRIMARY KEY CHECK (id BETWEEN 1 AND 30),
-    start_surah_id SMALLINT REFERENCES quran_surahs (id),
-    start_ayah     SMALLINT,
-    end_surah_id   SMALLINT REFERENCES quran_surahs (id),
-    end_ayah       SMALLINT
-);
+    id              SMALLINT NOT NULL PRIMARY KEY,   -- 1..30
+    start_surah_id  SMALLINT NULL,
+    start_ayah      SMALLINT NULL,
+    end_surah_id    SMALLINT NULL,
+    end_ayah        SMALLINT NULL,
+    CONSTRAINT qj_id_chk CHECK (id BETWEEN 1 AND 30),
+    CONSTRAINT qj_start_fk FOREIGN KEY (start_surah_id) REFERENCES quran_surahs (id),
+    CONSTRAINT qj_end_fk   FOREIGN KEY (end_surah_id)   REFERENCES quran_surahs (id)
+) ENGINE=InnoDB;
 
 CREATE TABLE quran_ayahs (
-    id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    surah_id     SMALLINT NOT NULL REFERENCES quran_surahs (id),
+    id           BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    surah_id     SMALLINT NOT NULL,
     ayah_number  SMALLINT NOT NULL,
-    text_uthmani TEXT NOT NULL,               -- teks resmi mushaf (sumber highlight)
-    text_imlaei  TEXT,                        -- ejaan sederhana: sumber search/TTS
-    text_latin   TEXT,                        -- transliterasi
-    juz          SMALLINT NOT NULL CHECK (juz BETWEEN 1 AND 30),
-    hizb         SMALLINT,
-    page         SMALLINT NOT NULL,           -- halaman mushaf standar (1-604)
-    sajda        BOOLEAN  NOT NULL DEFAULT false,
-    UNIQUE (surah_id, ayah_number)
-);
-
-CREATE INDEX quran_ayahs_juz_idx  ON quran_ayahs (juz);
-CREATE INDEX quran_ayahs_page_idx ON quran_ayahs (page);
+    text_uthmani TEXT NOT NULL,                      -- teks resmi mushaf (sumber highlight)
+    text_imlaei  TEXT,                               -- ejaan sederhana: sumber search/TTS
+    text_latin   TEXT,                               -- transliterasi
+    juz          SMALLINT NOT NULL,
+    hizb         SMALLINT NULL,
+    page         SMALLINT NOT NULL,                  -- halaman mushaf standar (1-604)
+    sajda        TINYINT(1) NOT NULL DEFAULT 0,
+    CONSTRAINT qa_juz_chk  CHECK (juz BETWEEN 1 AND 30),
+    CONSTRAINT qa_sajda_chk CHECK (sajda IN (0,1)),
+    CONSTRAINT qa_surah_fk FOREIGN KEY (surah_id) REFERENCES quran_surahs (id),
+    UNIQUE KEY qa_surah_ayah_uq (surah_id, ayah_number),
+    KEY quran_ayahs_juz_idx (juz),
+    KEY quran_ayahs_page_idx (page)
+) ENGINE=InnoDB;
 
 CREATE TABLE quran_translations (
-    id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    ayah_id         BIGINT NOT NULL REFERENCES quran_ayahs (id) ON DELETE CASCADE,
-    translator_code TEXT NOT NULL,            -- 'KEMENAG', 'QURANCOM_ID'...
+    id              BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    ayah_id         BIGINT NOT NULL,
+    translator_code VARCHAR(50) NOT NULL,            -- 'KEMENAG', 'QURANCOM_ID'...
     text            TEXT NOT NULL,
-    UNIQUE (ayah_id, translator_code)
-);
-
-CREATE INDEX quran_translations_code_idx ON quran_translations (translator_code);
+    CONSTRAINT qt_ayah_fk FOREIGN KEY (ayah_id) REFERENCES quran_ayahs (id) ON DELETE CASCADE,
+    UNIQUE KEY qt_ayah_translator_uq (ayah_id, translator_code),
+    KEY quran_translations_code_idx (translator_code)
+) ENGINE=InnoDB;
 
 CREATE TABLE quran_audio_files (
-    id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    ayah_id      BIGINT NOT NULL REFERENCES quran_ayahs (id) ON DELETE CASCADE,
-    reciter_code TEXT NOT NULL,               -- 'ALAFASY_128KBPS', 'HUSARY_128KBPS'...
-    audio_url    TEXT NOT NULL,               -- URL CDN / mirror everyayah (bukan media table)
-    byte_size    BIGINT,
-    duration_ms  INTEGER,
-    UNIQUE (ayah_id, reciter_code)
-);
-
-CREATE INDEX quran_audio_reciter_idx ON quran_audio_files (reciter_code);
+    id           BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    ayah_id      BIGINT NOT NULL,
+    reciter_code VARCHAR(100) NOT NULL,              -- 'ALAFASY_128KBPS', 'HUSARY_128KBPS'...
+    audio_url    VARCHAR(500) NOT NULL,              -- URL CDN / mirror everyayah (bukan media table)
+    byte_size    BIGINT NULL,
+    duration_ms  INT NULL,
+    CONSTRAINT qaf_ayah_fk FOREIGN KEY (ayah_id) REFERENCES quran_ayahs (id) ON DELETE CASCADE,
+    UNIQUE KEY qaf_ayah_reciter_uq (ayah_id, reciter_code),
+    KEY quran_audio_reciter_idx (reciter_code)
+) ENGINE=InnoDB;
 
 CREATE TABLE quran_words (
-    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    ayah_id       BIGINT NOT NULL REFERENCES quran_ayahs (id) ON DELETE CASCADE,
-    position      SMALLINT NOT NULL,          -- urutan kata dalam ayat (mulai 1)
-    text_uthmani  TEXT NOT NULL,
-    text_id       TEXT,                       -- arti per kata (id) utk WBW
-    UNIQUE (ayah_id, position)
-);
+    id            BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    ayah_id       BIGINT NOT NULL,
+    position      SMALLINT NOT NULL,                 -- urutan kata dalam ayat (mulai 1)
+    text_uthmani TEXT NOT NULL,
+    text_id       TEXT,                              -- arti per kata (id) utk WBW
+    CONSTRAINT qw_ayah_fk FOREIGN KEY (ayah_id) REFERENCES quran_ayahs (id) ON DELETE CASCADE,
+    UNIQUE KEY qw_ayah_pos_uq (ayah_id, position)
+) ENGINE=InnoDB;
 
 -- ----------------------------------------------------------------
--- Tajwid — SKOP MVP: highlight PER-AYAT.
--- Admin read-only terhadap data ini; materi penjelasan ada di
--- learning_materials (0007). Anotasi per-karakter/per-token DITUNDA
--- ke Phase 2 (offset karakter Uthmani rapuh terhadap Unicode/diakritik);
--- kalau nanti dibutuhkan, posisikan terhadap quran_words (token), bukan
--- offset byte/karakter mentah.
+-- Tajwid — SKOP MVP: materi per rule + highlight PER-AYAT.
+-- tajwid_ayah_annotations DORMANT (kosong, keputusan #3): highlight
+-- granular = Phase 2, diposisikan terhadap quran_words (token).
 -- ----------------------------------------------------------------
 
 CREATE TABLE tajwid_rules (
-    id          SMALLINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    code        TEXT NOT NULL UNIQUE,         -- 'IDGHAM_BIGUNNAH', 'IQLAB', ...
-    name_id     TEXT NOT NULL,
+    id          SMALLINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    code        VARCHAR(100) NOT NULL UNIQUE,        -- 'IDGHAM_BIGUNNAH', 'IQLAB', ...
+    name_id     VARCHAR(200) NOT NULL,
     description TEXT,
-    color_hex   CHAR(7),                      -- warna highlight di frontend
+    color_hex   CHAR(7),                             -- warna highlight di frontend
     sort_order  SMALLINT NOT NULL DEFAULT 0,
-    is_active   BOOLEAN NOT NULL DEFAULT true
-);
+    is_active   TINYINT(1) NOT NULL DEFAULT 1
+) ENGINE=InnoDB;
 
 CREATE TABLE tajwid_ayah_annotations (
-    id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    ayah_id          BIGINT NOT NULL REFERENCES quran_ayahs (id) ON DELETE CASCADE,
-    rule_id          SMALLINT NOT NULL REFERENCES tajwid_rules (id),
-    occurrence_count SMALLINT NOT NULL DEFAULT 1 CHECK (occurrence_count >= 1),
+    id               BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    ayah_id          BIGINT NOT NULL,
+    rule_id          SMALLINT NOT NULL,
+    occurrence_count SMALLINT NOT NULL DEFAULT 1,
     note             TEXT,
-    UNIQUE (ayah_id, rule_id)
-);
-
-CREATE INDEX tajwid_ayah_rule_idx ON tajwid_ayah_annotations (rule_id);
+    CONSTRAINT taa_ayah_fk FOREIGN KEY (ayah_id) REFERENCES quran_ayahs (id) ON DELETE CASCADE,
+    CONSTRAINT taa_rule_fk FOREIGN KEY (rule_id) REFERENCES tajwid_rules (id),
+    CONSTRAINT taa_count_chk CHECK (occurrence_count >= 1),
+    UNIQUE KEY taa_ayah_rule_uq (ayah_id, rule_id),
+    KEY tajwid_ayah_rule_idx (rule_id)
+) ENGINE=InnoDB;

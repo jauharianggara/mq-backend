@@ -46,5 +46,9 @@ aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-ve
 name = "mq-backend"
 path = "src/main.rs"
 
+[[bin]]
+name = "dbmigrate"
+path = "src/bin/dbmigrate.rs"
+
 [profile.release]
 lto = "thin"
