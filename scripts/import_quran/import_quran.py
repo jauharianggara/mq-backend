@@ -144,6 +144,30 @@ def step_juzs():
     assert len(j) == 30, f"juz != 30 ({len(j)})"
     return j
 
+def step_words():
+    """WBW per chapter: token char_type_name=='word' saja, re-number position 1..n."""
+    out = {}
+    for ch in range(1, 115):
+        def fetch(ch=ch):
+            items, page = [], 1
+            while True:
+                d = api(f"/verses/by_chapter/{ch}?words=true&per_page=50&page={page}"
+                        "&fields=verse_key&word_fields=text_uthmani")
+                vs = d.get("verses", [])
+                if not vs:
+                    break                 # endpoint ini meta=null -> lanjut sampai kosong
+                items.extend(vs)
+                page += 1
+                time.sleep(SLEEP)
+            return items
+        out[str(ch)] = cached(f"words_{ch:03d}.json", fetch)
+        if ch % 20 == 0:
+            print(f"  ...words chapter {ch}/114")
+    total_verses = sum(len(v) for v in out.values())
+    print(f"words: 114 chapter cached, {total_verses} verses")
+    assert total_verses == 6236, "verses words != 6236"
+    return out
+
 def derive_juz_of(surah, ayah, juz_starts):
     """juz_starts: list of (surah, ayah) awal juz 1..30 (sorted)."""
     lo, hi = 0, len(juz_starts) - 1
@@ -155,7 +179,7 @@ def derive_juz_of(surah, ayah, juz_starts):
 
 # ---------- DB ----------
 
-def db_write(chapters, uthmani, imlaei, trans, pages, juzs):
+def db_write(chapters, uthmani, imlaei, trans, pages, juzs, words=None):
     import pymysql
     env = {}
     with io.open(os.path.join(HERE, "..", "..", ".env"), encoding="utf-8") as f:
@@ -249,6 +273,28 @@ def db_write(chapters, uthmani, imlaei, trans, pages, juzs):
                     (code, url, s, a))
         print(f"quran_audio_files OK ({len(RECITERS)} reciter x 6236)")
 
+        # 6. quran_words (WBW) — token 'word' saja, position re-number; transliteration + EN
+        n_words = 0
+        for ch_str, verses in words.items():
+            for v in verses:
+                s, a = (int(x) for x in v["verse_key"].split(":"))
+                pos = 0
+                for w in v.get("words", []):
+                    if w.get("char_type_name") != "word":
+                        continue
+                    pos += 1
+                    tr = w.get("translation") or {}
+                    tr = tr.get("text") if isinstance(tr, dict) else tr
+                    li = w.get("transliteration") or {}
+                    li = li.get("text") if isinstance(li, dict) else li
+                    cur.execute(
+                        "INSERT INTO quran_words (ayah_id, position, text_uthmani, transliteration, text_en) "
+                        "SELECT qa.id, %s, %s, %s, %s FROM quran_ayahs qa WHERE qa.surah_id=%s AND qa.ayah_number=%s "
+                        "ON DUPLICATE KEY UPDATE text_uthmani=VALUES(text_uthmani), transliteration=VALUES(transliteration), text_en=VALUES(text_en)",
+                        (pos, w.get("text_uthmani") or w.get("text"), li, tr, s, a))
+                    n_words += 1
+        print(f"quran_words OK ({n_words} kata)")
+
         conn.commit()
     except Exception:
         conn.rollback()
@@ -265,6 +311,13 @@ def db_write(chapters, uthmani, imlaei, trans, pages, juzs):
         print(f"{tbl}: {cur.fetchone()[0]}")
     cur.execute("SELECT text_uthmani FROM quran_ayahs WHERE surah_id=1 AND ayah_number=1")
     print("sample 1:1:", cur.fetchone()[0][:60], "...")
+    if words:
+        cur.execute("SELECT COUNT(*) FROM quran_words")
+        print("quran_words:", cur.fetchone()[0])
+        cur.execute("SELECT qw.position, qw.text_uthmani, qw.transliteration, qw.text_en FROM quran_words qw "
+                    "JOIN quran_ayahs qa ON qa.id=qw.ayah_id WHERE qa.surah_id=1 AND qa.ayah_number=1 ORDER BY qw.position")
+        for row in cur.fetchall():
+            print("  wbw:", row)
     conn.close()
 
 def main():
@@ -274,8 +327,9 @@ def main():
     t = step_trans()
     p = step_pages()
     j = step_juzs()
+    w = step_words()
     if step in ("all", "db"):
-        db_write(ch, u, i, t, p, j)
+        db_write(ch, u, i, t, p, j, w)
     print("IMPORT SELESAI")
 
 if __name__ == "__main__":

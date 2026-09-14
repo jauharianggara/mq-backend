@@ -74,11 +74,13 @@ CREATE TABLE quran_audio_files (
 ) ENGINE=InnoDB;
 
 CREATE TABLE quran_words (
-    id            BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    ayah_id       BIGINT NOT NULL,
-    position      SMALLINT NOT NULL,                 -- urutan kata dalam ayat (mulai 1)
-    text_uthmani TEXT NOT NULL,
-    text_id       TEXT,                              -- arti per kata (id) utk WBW
+    id              BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    ayah_id         BIGINT NOT NULL,
+    position        SMALLINT NOT NULL,                 -- urutan kata dalam ayat (mulai 1, token kata saja)
+    text_uthmani    TEXT NOT NULL,
+    transliteration VARCHAR(200) NULL,                 -- latin harfiah (quran.com)
+    text_en         TEXT NULL,                        -- arti per kata EN (sumber: quran.com)
+    text_id         TEXT,                              -- arti per kata ID (upgrade QuranWBW — Phase 2)
     CONSTRAINT qw_ayah_fk FOREIGN KEY (ayah_id) REFERENCES quran_ayahs (id) ON DELETE CASCADE,
     UNIQUE KEY qw_ayah_pos_uq (ayah_id, position)
 ) ENGINE=InnoDB;

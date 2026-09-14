@@ -1,0 +1,563 @@
+// MQ Digital Platform — ERD (generate otomatis dari mq_dev, Task 1.3)
+// Render: https://dbdiagram.io/d — paste file ini.
+
+Table "activity_events" {
+  id bigint [pk] [increment]
+  user_id bigint [not null]
+  event_type varchar(100) [not null]
+  ref_type varchar(50)
+  ref_id varchar(64)
+  payload json [not null]
+  occurred_at timestamp [not null]
+}
+
+Table "announcements" {
+  id bigint [pk] [increment]
+  title varchar(255) [not null]
+  body text [not null]
+  level varchar(20) [not null]
+  starts_at timestamp
+  ends_at timestamp
+  is_active tinyint(1) [not null]
+  created_by bigint
+  created_at timestamp [not null]
+}
+
+Table "article_categories" {
+  id smallint [pk] [increment]
+  slug varchar(100) [unique] [not null]
+  name varchar(150) [not null]
+}
+
+Table "articles" {
+  id bigint [pk] [increment]
+  slug varchar(200) [unique] [not null]
+  category_id smallint
+  title varchar(255) [not null]
+  excerpt text
+  content_html mediumtext [not null]
+  cover_media_id bigint
+  author_id bigint
+  status varchar(50) [not null]
+  published_at timestamp
+  reading_minutes smallint
+  view_count int [not null]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table "audit_logs" {
+  id bigint [pk] [increment]
+  actor_id bigint
+  action varchar(50) [not null]
+  module varchar(50) [not null]
+  entity_type varchar(100) [not null]
+  entity_id varchar(64)
+  old_value json
+  new_value json
+  ip_address varchar(45)
+  user_agent text
+  created_at timestamp [not null]
+}
+
+Table "banners" {
+  id bigint [pk] [increment]
+  title varchar(255) [not null]
+  image_media_id bigint [not null]
+  position varchar(30) [not null]
+  target_type varchar(20)
+  target_value varchar(500)
+  sort_order smallint [not null]
+  starts_at timestamp
+  ends_at timestamp
+  is_active tinyint(1) [not null]
+  created_at timestamp [not null]
+}
+
+Table "bookmarks" {
+  id bigint [pk] [increment]
+  user_id bigint [not null]
+  ayah_id bigint [not null]
+  note text
+  created_at timestamp [not null]
+}
+
+Table "faqs" {
+  id bigint [pk] [increment]
+  question varchar(500) [not null]
+  answer text [not null]
+  sort_order smallint [not null]
+  is_active tinyint(1) [not null]
+  created_at timestamp [not null]
+}
+
+Table "khatmil_campaigns" {
+  id bigint [pk] [increment]
+  slug varchar(200) [unique] [not null]
+  name varchar(255) [not null]
+  description text
+  mode varchar(20) [not null]
+  status varchar(30) [not null]
+  target_khataman int [not null]
+  period_start date
+  period_end date
+  min_minutes_per_juz smallint [not null]
+  require_manual_verification tinyint(1) [not null]
+  max_participants int
+  created_by bigint [not null]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table "khatmil_completions" {
+  id bigint [pk] [increment]
+  campaign_id bigint [not null]
+  cycle smallint [not null]
+  completed_at timestamp [not null]
+}
+
+Table "khatmil_juz_assignments" {
+  id bigint [pk] [increment]
+  campaign_id bigint [not null]
+  participant_id bigint [not null]
+  juz smallint [not null]
+  status varchar(30) [not null]
+  assigned_at timestamp [not null]
+  due_at timestamp
+  active_marker tinyint
+}
+
+Table "khatmil_participants" {
+  id bigint [pk] [increment]
+  campaign_id bigint [not null]
+  user_id bigint [not null]
+  joined_at timestamp [not null]
+}
+
+Table "khatmil_progress" {
+  assignment_id bigint [pk]
+  pages_read smallint [not null]
+  minutes_read smallint [not null]
+  verification varchar(30) [not null]
+  verified_by bigint
+  verified_at timestamp
+  updated_at timestamp [not null]
+}
+
+Table "khatmil_progress_events" {
+  id bigint [pk] [increment]
+  assignment_id bigint [not null]
+  user_id bigint [not null]
+  pages_read smallint [not null]
+  minutes_read smallint [not null]
+  note text
+  recorded_at timestamp [not null]
+}
+
+Table "learning_materials" {
+  id bigint [pk] [increment]
+  slug varchar(200) [unique] [not null]
+  title varchar(255) [not null]
+  tajwid_rule_id smallint
+  content_md mediumtext [not null]
+  cover_media_id bigint
+  status varchar(50) [not null]
+  published_at timestamp
+  created_by bigint
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table "media" {
+  id bigint [pk] [increment]
+  owner_id bigint
+  kind varchar(50) [not null]
+  status varchar(50) [not null]
+  bucket varchar(150) [not null]
+  storage_key varchar(255) [unique] [not null]
+  mime_type varchar(150) [not null]
+  byte_size bigint [not null]
+  duration_ms int
+  checksum_sha256 char(64)
+  created_at timestamp [not null]
+}
+
+Table "memorization_progress" {
+  user_id bigint [pk]
+  surah_id smallint [pk]
+  last_passed_ayah smallint [not null]
+  passed_count smallint [not null]
+  updated_at timestamp [not null]
+}
+
+Table "memorization_reviews" {
+  id bigint [pk] [increment]
+  submission_id bigint [unique] [not null]
+  reviewer_id bigint [not null]
+  verdict varchar(50) [not null]
+  notes text
+  reply_audio_media_id bigint
+  created_at timestamp [not null]
+}
+
+Table "memorization_submissions" {
+  id bigint [pk] [increment]
+  user_id bigint [not null]
+  surah_id smallint [not null]
+  ayah_start smallint [not null]
+  ayah_end smallint [not null]
+  audio_media_id bigint [not null]
+  duration_ms int
+  note text
+  status varchar(50) [not null]
+  ustadz_id bigint
+  submitted_at timestamp [not null]
+  reviewed_at timestamp
+}
+
+Table "notification_templates" {
+  id smallint [pk] [increment]
+  code varchar(100) [unique] [not null]
+  title_template varchar(255) [not null]
+  body_template text [not null]
+  default_channel varchar(30) [not null]
+  is_active tinyint(1) [not null]
+}
+
+Table "permissions" {
+  id int [pk] [increment]
+  code varchar(100) [unique] [not null]
+  module varchar(50) [not null]
+  description text
+}
+
+Table "question_assignments" {
+  id bigint [pk] [increment]
+  question_id bigint [not null]
+  ustadz_id bigint [not null]
+  status varchar(30) [not null]
+  assigned_at timestamp [not null]
+  responded_at timestamp
+}
+
+Table "question_categories" {
+  id smallint [pk] [increment]
+  slug varchar(100) [unique] [not null]
+  name varchar(150) [not null]
+  icon varchar(50)
+  sort_order smallint [not null]
+  is_active tinyint(1) [not null]
+}
+
+Table "question_messages" {
+  id bigint [pk] [increment]
+  question_id bigint [not null]
+  sender_id bigint [not null]
+  type varchar(20) [not null]
+  content text
+  media_id bigint
+  duration_ms int
+  created_at timestamp [not null]
+}
+
+Table "question_status_history" {
+  id bigint [pk] [increment]
+  question_id bigint [not null]
+  from_status varchar(50)
+  to_status varchar(50) [not null]
+  changed_by bigint
+  note text
+  created_at timestamp [not null]
+}
+
+Table "questions" {
+  id bigint [pk] [increment]
+  user_id bigint [not null]
+  category_id smallint [not null]
+  is_anonymous tinyint(1) [not null]
+  title varchar(500) [not null]
+  body text
+  status varchar(50) [not null]
+  published_message_id bigint
+  approved_by bigint
+  published_at timestamp
+  closed_at timestamp
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table "quran_audio_files" {
+  id bigint [pk] [increment]
+  ayah_id bigint [not null]
+  reciter_code varchar(100) [not null]
+  audio_url varchar(500) [not null]
+  byte_size bigint
+  duration_ms int
+}
+
+Table "quran_ayahs" {
+  id bigint [pk] [increment]
+  surah_id smallint [not null]
+  ayah_number smallint [not null]
+  text_uthmani text [not null]
+  text_imlaei text
+  text_latin text
+  juz smallint [not null]
+  hizb smallint
+  page smallint [not null]
+  sajda tinyint(1) [not null]
+}
+
+Table "quran_juzs" {
+  id smallint [pk]
+  start_surah_id smallint
+  start_ayah smallint
+  end_surah_id smallint
+  end_ayah smallint
+}
+
+Table "quran_surahs" {
+  id smallint [pk]
+  name_arabic text [not null]
+  name_latin varchar(100) [not null]
+  name_id varchar(100) [not null]
+  ayah_count smallint [not null]
+  revelation varchar(20) [not null]
+}
+
+Table "quran_translations" {
+  id bigint [pk] [increment]
+  ayah_id bigint [not null]
+  translator_code varchar(50) [not null]
+  text text [not null]
+}
+
+Table "quran_words" {
+  id bigint [pk] [increment]
+  ayah_id bigint [not null]
+  position smallint [not null]
+  text_uthmani text [not null]
+  transliteration varchar(200)
+  text_en text
+  text_id text
+}
+
+Table "role_permissions" {
+  role_id smallint [pk]
+  permission_id int [pk]
+}
+
+Table "roles" {
+  id smallint [pk] [increment]
+  code varchar(100) [unique] [not null]
+  name varchar(150) [not null]
+  description text
+}
+
+Table "scheduled_jobs" {
+  id bigint [pk] [increment]
+  job_type varchar(100) [not null]
+  payload json [not null]
+  status varchar(20) [not null]
+  run_at timestamp [not null]
+  started_at timestamp
+  finished_at timestamp
+  attempts smallint [not null]
+  last_error text
+  dedupe_key varchar(191) [unique]
+  locked_at timestamp
+}
+
+Table "settings" {
+  key varchar(150) [pk]
+  value json [not null]
+  description text
+  updated_by bigint
+  updated_at timestamp [not null]
+}
+
+Table "tajwid_ayah_annotations" {
+  id bigint [pk] [increment]
+  ayah_id bigint [not null]
+  rule_id smallint [not null]
+  occurrence_count smallint [not null]
+  note text
+}
+
+Table "tajwid_rules" {
+  id smallint [pk] [increment]
+  code varchar(100) [unique] [not null]
+  name_id varchar(200) [not null]
+  description text
+  color_hex char(7)
+  sort_order smallint [not null]
+  is_active tinyint(1) [not null]
+}
+
+Table "user_devices" {
+  id bigint [pk] [increment]
+  user_id bigint [not null]
+  platform varchar(50) [not null]
+  push_token varchar(255) [unique]
+  device_name text
+  app_version text
+  last_seen_at timestamp
+  is_active tinyint(1) [not null]
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table "user_notifications" {
+  id bigint [pk] [increment]
+  user_id bigint [not null]
+  template_code varchar(100)
+  title varchar(255) [not null]
+  body text [not null]
+  data json [not null]
+  channel varchar(30) [not null]
+  sent_at timestamp
+  read_at timestamp
+  created_at timestamp [not null]
+}
+
+Table "user_profiles" {
+  user_id bigint [pk]
+  full_name varchar(200) [not null]
+  gender varchar(10)
+  birth_date date
+  address_text text
+  city varchar(100)
+  province varchar(100)
+  photo_media_id bigint
+  bio text
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table "user_reading_progress" {
+  user_id bigint [pk]
+  last_ayah_id bigint
+  last_page smallint
+  updated_at timestamp [not null]
+}
+
+Table "user_roles" {
+  user_id bigint [pk]
+  role_id smallint [pk]
+  assigned_by bigint
+  assigned_at timestamp [not null]
+}
+
+Table "user_sessions" {
+  id bigint [pk] [increment]
+  user_id bigint [not null]
+  refresh_token_hash varchar(255) [unique] [not null]
+  device_id bigint
+  ip_address varchar(45)
+  user_agent text
+  expires_at timestamp [not null]
+  revoked_at timestamp
+  created_at timestamp [not null]
+}
+
+Table "users" {
+  id bigint [pk] [increment]
+  phone varchar(20) [unique]
+  email varchar(255) [unique]
+  password_hash text
+  account_type varchar(50) [not null]
+  status varchar(50) [not null]
+  phone_verified_at timestamp
+  email_verified_at timestamp
+  last_login_at timestamp
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table "ustadz_profiles" {
+  user_id bigint [pk]
+  code varchar(100) [unique]
+  title varchar(50)
+  bio text
+  photo_media_id bigint
+  is_accepting_questions tinyint(1) [not null]
+  max_active_questions smallint [not null]
+  verified_at timestamp
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+}
+
+Table "ustadz_specializations" {
+  ustadz_id bigint [pk]
+  category_id smallint [pk]
+}
+
+Ref: "activity_events"."user_id" -> "users"."id"
+Ref: "announcements"."created_by" <> "users"."id"
+Ref: "articles"."author_id" <> "users"."id"
+Ref: "articles"."category_id" <> "article_categories"."id"
+Ref: "articles"."cover_media_id" <> "media"."id"
+Ref: "audit_logs"."actor_id" <> "users"."id"
+Ref: "banners"."image_media_id" <> "media"."id"
+Ref: "bookmarks"."ayah_id" <> "quran_ayahs"."id"
+Ref: "bookmarks"."user_id" -> "users"."id"
+Ref: "khatmil_campaigns"."created_by" <> "users"."id"
+Ref: "khatmil_completions"."campaign_id" -> "khatmil_campaigns"."id"
+Ref: "khatmil_juz_assignments"."campaign_id" -> "khatmil_campaigns"."id"
+Ref: "khatmil_juz_assignments"."participant_id" -> "khatmil_participants"."id"
+Ref: "khatmil_participants"."campaign_id" -> "khatmil_campaigns"."id"
+Ref: "khatmil_participants"."user_id" <> "users"."id"
+Ref: "khatmil_progress"."assignment_id" -> "khatmil_juz_assignments"."id"
+Ref: "khatmil_progress"."verified_by" <> "users"."id"
+Ref: "khatmil_progress_events"."assignment_id" -> "khatmil_juz_assignments"."id"
+Ref: "khatmil_progress_events"."user_id" <> "users"."id"
+Ref: "learning_materials"."cover_media_id" <> "media"."id"
+Ref: "learning_materials"."created_by" <> "users"."id"
+Ref: "learning_materials"."tajwid_rule_id" <> "tajwid_rules"."id"
+Ref: "media"."owner_id" <> "users"."id"
+Ref: "memorization_progress"."surah_id" <> "quran_surahs"."id"
+Ref: "memorization_progress"."user_id" -> "users"."id"
+Ref: "memorization_reviews"."reply_audio_media_id" <> "media"."id"
+Ref: "memorization_reviews"."reviewer_id" <> "users"."id"
+Ref: "memorization_reviews"."submission_id" -> "memorization_submissions"."id"
+Ref: "memorization_submissions"."audio_media_id" <> "media"."id"
+Ref: "memorization_submissions"."surah_id" <> "quran_surahs"."id"
+Ref: "memorization_submissions"."user_id" <> "users"."id"
+Ref: "memorization_submissions"."ustadz_id" <> "users"."id"
+Ref: "question_assignments"."question_id" -> "questions"."id"
+Ref: "question_assignments"."ustadz_id" <> "users"."id"
+Ref: "question_messages"."media_id" <> "media"."id"
+Ref: "question_messages"."question_id" -> "questions"."id"
+Ref: "question_messages"."sender_id" <> "users"."id"
+Ref: "question_status_history"."changed_by" <> "users"."id"
+Ref: "question_status_history"."question_id" -> "questions"."id"
+Ref: "questions"."approved_by" <> "users"."id"
+Ref: "questions"."category_id" <> "question_categories"."id"
+Ref: "questions"."published_message_id" <> "question_messages"."id"
+Ref: "questions"."user_id" <> "users"."id"
+Ref: "quran_audio_files"."ayah_id" -> "quran_ayahs"."id"
+Ref: "quran_ayahs"."surah_id" <> "quran_surahs"."id"
+Ref: "quran_juzs"."end_surah_id" <> "quran_surahs"."id"
+Ref: "quran_juzs"."start_surah_id" <> "quran_surahs"."id"
+Ref: "quran_translations"."ayah_id" -> "quran_ayahs"."id"
+Ref: "quran_words"."ayah_id" -> "quran_ayahs"."id"
+Ref: "role_permissions"."permission_id" -> "permissions"."id"
+Ref: "role_permissions"."role_id" -> "roles"."id"
+Ref: "settings"."updated_by" <> "users"."id"
+Ref: "tajwid_ayah_annotations"."ayah_id" -> "quran_ayahs"."id"
+Ref: "tajwid_ayah_annotations"."rule_id" <> "tajwid_rules"."id"
+Ref: "user_devices"."user_id" -> "users"."id"
+Ref: "user_notifications"."user_id" -> "users"."id"
+Ref: "user_profiles"."photo_media_id" <> "media"."id"
+Ref: "user_profiles"."user_id" -> "users"."id"
+Ref: "user_reading_progress"."last_ayah_id" <> "quran_ayahs"."id"
+Ref: "user_reading_progress"."user_id" -> "users"."id"
+Ref: "user_roles"."assigned_by" <> "users"."id"
+Ref: "user_roles"."role_id" -> "roles"."id"
+Ref: "user_roles"."user_id" -> "users"."id"
+Ref: "user_sessions"."device_id" <> "user_devices"."id"
+Ref: "user_sessions"."user_id" -> "users"."id"
+Ref: "ustadz_profiles"."photo_media_id" <> "media"."id"
+Ref: "ustadz_profiles"."user_id" -> "users"."id"
+Ref: "ustadz_specializations"."category_id" <> "question_categories"."id"
+Ref: "ustadz_specializations"."ustadz_id" -> "ustadz_profiles"."user_id"
