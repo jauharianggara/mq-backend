@@ -1,0 +1,50 @@
+[package]
+name = "mq-backend"
+version = "0.1.0"
+edition = "2021"
+description = "MQ Mujayarotul Faqih - Pesantren Digital Platform backend API"
+
+[dependencies]
+# Web
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "limit"] }
+
+# DB (MySQL 8 - instance Laragon; WAJIB semua tipe SIGNED - gotcha trio)
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "mysql", "chrono", "uuid", "migrate"] }
+
+# Serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Auth
+argon2 = "0.5"
+jsonwebtoken = "9"
+
+# Util
+thiserror = "2"
+validator = { version = "0.20", features = ["derive"] }
+dotenvy = "0.15"
+config = { version = "0.15", default-features = false, features = ["toml"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Cache & rate-limit: IN-PROCESS (keputusan #13 - redis = optional feature, BUKAN default)
+moka = { version = "0.12", features = ["future"] }
+governor = "0.10"
+
+# Object storage (MinIO via NSSM / R2)
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio"] }
+
+# Worker bins
+[[bin]]
+name = "mq-backend"
+path = "src/main.rs"
+
+[profile.release]
+lto = "thin"

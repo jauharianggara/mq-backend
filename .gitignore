@@ -7,3 +7,10 @@ run-*.log
 run-*.err.log
 # Windows
 Thumbs.db
+
+
+# Added by cargo
+#
+# already existing elements were commented out
+
+#/target
