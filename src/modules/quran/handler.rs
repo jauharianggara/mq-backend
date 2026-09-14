@@ -46,10 +46,9 @@ pub struct PageQ {
 pub async fn surahs(State(st): State<AppState>) -> Result<Response, AppError> {
     // cache in-process 24h (keputusan #13 + modul 5)
     if let Some(cached) = st.cache_str.get(&"quran:surahs") {
-        return Ok((StatusCode::OK, Json(json!({
-            "data": serde_json::from_str::<serde_json::Value>(&cached).unwrap_or_default(),
-            "meta": { "cached": true }
-        }))).into_response());
+        // body ter-cache SUDAH ber-envelope — parse & kirim apa adanya (jangan bungkus ganda)
+        let body: serde_json::Value = serde_json::from_str(&cached).unwrap_or_default();
+        return Ok((StatusCode::OK, Json(body)).into_response());
     }
     let list = svc::surahs(&st.pool).await?;
     let body = json!({ "data": list, "meta": {} });
