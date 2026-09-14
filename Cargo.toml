@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "MQ Mujayarotul Faqih - Pesantren Digital Platform backend API"
 
+[lib]
+name = "mq_backend_lib"
+path = "src/lib.rs"
+
 [dependencies]
 # Web
 axum = { version = "0.8", features = ["multipart"] }
@@ -39,8 +43,8 @@ moka = { version = "0.12", features = ["future", "sync"] }
 governor = "0.10"
 
 # Object storage (MinIO via NSSM / R2)
-aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio"] }
-aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio"] }
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
 
 # Worker bins
 [[bin]]
