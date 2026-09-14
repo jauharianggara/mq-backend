@@ -50,5 +50,9 @@ path = "src/main.rs"
 name = "dbmigrate"
 path = "src/bin/dbmigrate.rs"
 
+[[bin]]
+name = "seed"
+path = "src/bin/seed.rs"
+
 [profile.release]
 lto = "thin"
