@@ -1,0 +1,1168 @@
+openapi: 3.1.0
+info:
+  title: MQ Digital Platform API
+  version: 1.0.0
+  description: |
+    Backend API MQ Mujayarotul Faqih — Pesantren Digital Platform.
+    Sumber kontrak: plan gabungan rev 11+ (Bagian I Task 2.1, Bagian III tabel A/B).
+
+    **Konvensi:**
+    - Semua response sukses = envelope `{ "data": ..., "meta": { } }`.
+    - Semua error = `{ "code": "...", "message": "...", "details?": ... }` dengan HTTP 401/403/404/409/422/429/500.
+    - Pagination feed/queue/inbox = **cursor**: `?limit=20&cursor=...` → `meta.pagination = { next_cursor, has_more }`.
+    - POST berbiaya (setoran, pesan) WAJIB header `Idempotency-Key` (disimpan `client_key` UNIQUE per user — replay 200, baru 201).
+    - Waktu = ISO-8601 UTC. ID = BIGINT.
+    - Authorization: permission RBAC (`require_permission`), BUKAN role string — lihat docs/permissions.md.
+servers:
+  - url: https://mq-api.jagodigital.online/api/v1
+    description: staging (Bagian II)
+  - url: http://127.0.0.1:8290/api/v1
+    description: dev lokal
+
+security:
+  - bearerAuth: []
+
+tags:
+  - {name: app, description: Meta & force-update}
+  - {name: auth, description: "Registrasi, login, token, verifikasi"}
+  - {name: me, description: Profil & perangkat sendiri}
+  - {name: quran, description: Data Al-Quran (read-only) + last-read/bookmark}
+  - {name: learning, description: Materi & progress membaca}
+  - {name: memorization, description: Setoran hafalan & review ustadz}
+  - {name: khatmil, description: Khatmil/khataman campaign}
+  - {name: questions, description: Tanya ustadz + moderation}
+  - {name: media, description: Upload object storage (presign 3-langkah)}
+  - {name: notifications, description: Inbox notifikasi}
+  - {name: cms, description: Konten publik}
+  - {name: admin, description: Endpoint admin (users/cms/dashboard/settings/audit)}
+
+paths:
+  /app/version:
+    get:
+      tags: [app]
+      summary: Versi minimum app (force-update) — TANPA auth (dicek di splash)
+      security: []
+      parameters:
+        - {name: app_id, in: query, required: true, schema: {enum: [SANTRI_APP, USTADZ_APP, ADMIN_WEB]}}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { $ref: "#/components/schemas/AppVersion" }
+
+  # ---------------- AUTH ----------------
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Registrasi santri (open; consent PDP dicatat)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password, consent]
+              properties:
+                phone: {type: string, example: "6281234567890"}
+                email: {type: string, format: email}
+                password: {type: string, minLength: 8}
+                full_name: {type: string}
+                consent: {type: boolean, description: "harus true (UU PDP)"}
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Login (email ATAU phone + password)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                email: {type: string}
+                phone: {type: string}
+                password: {type: string}
+      responses:
+        "200":
+          description: Token pair
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          access_token: {type: string}
+                          refresh_token: {type: string}
+                          user: { $ref: "#/components/schemas/UserPublic" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Rotasi refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: {type: string}
+      responses:
+        "200": { description: Token pair baru (rotasi — token lama revoked)", content: { application/json: { schema: { type: object } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /auth/verify-email:
+    post:
+      tags: [auth]
+      summary: Verifikasi email (token dari link — keputusan #14; WA OTP backlog)
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: {type: string}
+      responses:
+        "200": { description: Akun ACTIVE (bila policy) }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+
+  /auth/resend-verification:
+    post:
+      tags: [auth]
+      summary: Kirim ulang email verifikasi (rate-limit terpisah)
+      responses:
+        "200": { description: Dikirim / queued }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /auth/forgot-password:
+    post:
+      tags: [auth]
+      summary: Minta token reset (one-time, hashed at rest)
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: {type: string}
+                phone: {type: string}
+      responses:
+        "200": { description: Selalu OK (anti-enumeration) }
+  /auth/reset-password:
+    post:
+      tags: [auth]
+      summary: Reset password dengan token
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, new_password]
+              properties:
+                token: {type: string}
+                new_password: {type: string, minLength: 8}
+      responses:
+        "200": { description: Berhasil (semua sesi revoked) }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /auth/change-password:
+    post:
+      tags: [auth]
+      summary: Ganti password (login)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [old_password, new_password]
+              properties:
+                old_password: {type: string}
+                new_password: {type: string, minLength: 8}
+      responses:
+        "200": { description: OK }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Logout (revoke sesi + nonaktifkan device terkait)
+      responses:
+        "200": { description: OK }
+  /auth/logout-all:
+    post:
+      tags: [auth]
+      summary: Logout semua perangkat (revoke semua sesi + device)
+      responses:
+        "200": { description: OK }
+
+  # ---------------- ME ----------------
+  /me:
+    get:
+      tags: [me]
+      summary: Profil sendiri
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { $ref: "#/components/schemas/UserPublic" }
+    patch:
+      tags: [me]
+      summary: Update profil (user_profiles)
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProfileUpsert" }
+      responses:
+        "200": { description: OK }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+    delete:
+      tags: [me]
+      summary: "Hapus akun (PDP) — status DELETED + anonymize; histori sah dipertahankan"
+      responses:
+        "200": { description: OK }
+
+  /me/progress/summary:
+    get:
+      tags: [me]
+      summary: Ringkasan progress (hafalan + baca) — dipakai profil santri
+      responses:
+        "200": { description: OK (agregat dari memorization_progress & reading)" }
+
+  /me/devices:
+    get:
+      tags: [me]
+      summary: Daftar device terdaftar
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [me]
+      summary: Daftarkan device push (app_id wajib benar; USTADZ_APP hanya role USTADZ)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [push_token, platform, app_id]
+              properties:
+                push_token: {type: string}
+                platform: {type: string, enum: [ANDROID, IOS, WEB]}
+                app_id: {type: string, enum: [SANTRI_APP, USTADZ_APP, ADMIN_WEB]}
+                device_name: {type: string}
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /me/devices/{id}:
+    delete:
+      tags: [me]
+      summary: Hapus device
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /me/home:
+    get:
+      tags: [me]
+      summary: "Agregat Home santri (Bagian III M2.5): sapaan + last-read + progress hafalan + khatmil saya + counter jawaban + notif unread"
+      responses:
+        "200": { description: "OK — cache 60s, invalidasi on-write" }
+  /ustadz/me/home:
+    get:
+      tags: [me]
+      summary: "Agregat Home ustadz: queue setoran pending + pertanyaan belum dibalas (SLA) + notif + stats"
+      responses:
+        "200": { description: OK }
+
+  /me/ustadz/specializations:
+    get:
+      tags: [me]
+      summary: Spesialisasi ustadz sendiri
+      responses:
+        "200": { description: OK }
+    put:
+      tags: [me]
+      summary: Set spesialisasi (array category_id)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category_ids]
+              properties:
+                category_ids: {type: array, items: {type: integer}}
+      responses:
+        "200": { description: OK }
+  /me/ustadz/availability:
+    get:
+      tags: [me]
+      summary: "Availability (is_accepting_questions + max_active_questions)"
+      responses:
+        "200": { description: OK }
+    put:
+      tags: [me]
+      summary: Update availability
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [is_accepting_questions, max_active_questions]
+              properties:
+                is_accepting_questions: {type: boolean}
+                max_active_questions: {type: integer, minimum: 1, maximum: 100}
+      responses:
+        "200": { description: OK }
+  /ustadz/me/stats:
+    get:
+      tags: [me]
+      summary: Statistik ustadz (jawaban total, pending, avg response time)
+      responses:
+        "200": { description: OK }
+
+  # ---------------- QURAN ----------------
+  /quran/surahs:
+    get:
+      tags: [quran]
+      summary: Daftar surah (cache 24h)
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/EnvelopeList"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Surah" }
+  /quran/surahs/{id}/ayahs:
+    get:
+      tags: [quran]
+      summary: Ayat per surah (uthmani + imlaei + juz + page)
+      security: []
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer, minimum: 1, maximum: 114}}
+        - {name: translation, in: query, schema: {type: string, default: KEMENAG}}
+        - {name: limit, in: query, schema: {type: integer, default: 50}}
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/EnvelopeList"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: "#/components/schemas/Ayah" }
+  /quran/audio:
+    get:
+      tags: [quran]
+      summary: URL audio per ayat (reciter) — file di CDN
+      security: []
+      parameters:
+        - {name: ayah_id, in: query, required: true, schema: {type: integer}}
+        - {name: reciter, in: query, schema: {type: string, example: ALAFASY_128KBPS}}
+      responses:
+        "200": { description: OK }
+
+  /me/reading/last-read:
+    get:
+      tags: [quran]
+      summary: Last-read (1 baris per user)
+      responses:
+        "200": { description: OK }
+    put:
+      tags: [quran]
+      summary: Set last-read (idempotent upsert)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ayah_id]
+              properties:
+                ayah_id: {type: integer}
+      responses:
+        "200": { description: OK }
+  /me/bookmarks:
+    get:
+      tags: [quran]
+      summary: Daftar bookmark
+      parameters: [{name: limit, in: query, schema: {type: integer}}, {name: cursor, in: query, schema: {type: string}}]
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [quran]
+      summary: Tambah bookmark (upsert idempotent)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ayah_id]
+              properties:
+                ayah_id: {type: integer}
+                note: {type: string}
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+  /me/bookmarks/{ayah_id}:
+    delete:
+      tags: [quran]
+      summary: Hapus bookmark
+      parameters: [{name: ayah_id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+
+  # ---------------- LEARNING ----------------
+  /learning/materials:
+    get:
+      tags: [learning]
+      summary: Materi (published utk semua; admin lihat semua via status param)
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [DRAFT, PUBLISHED, ARCHIVED]}}
+        - {name: tajwid_rule, in: query, schema: {type: string}}
+      responses:
+        "200": { description: OK }
+  /learning/materials/{id}:
+    get:
+      tags: [learning]
+      summary: Detail materi (markdown)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /me/learning/{material_id}/progress:
+    put:
+      tags: [learning]
+      summary: Upsert progress baca materi
+      parameters: [{name: material_id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                completed: {type: boolean}
+                last_position: {type: string}
+      responses:
+        "200": { description: OK }
+
+  # ---------------- MEMORIZATION ----------------
+  /memorization/submissions:
+    post:
+      tags: [memorization]
+      summary: "Kirim setoran (media_id dari presign; header Idempotency-Key WAJIB)"
+      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string, maxLength: 64}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [surah_id, ayah_start, ayah_end, audio_media_id]
+              properties:
+                surah_id: {type: integer}
+                ayah_start: {type: integer}
+                ayah_end: {type: integer}
+                audio_media_id: {type: integer}
+                note: {type: string}
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "200": { description: "REPLAY idempotent (client_key sama)" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /me/submissions:
+    get:
+      tags: [memorization]
+      summary: Riwayat setoran sendiri
+      parameters: [{name: limit, in: query, schema: {type: integer}}, {name: cursor, in: query, schema: {type: string}}]
+      responses:
+        "200": { description: OK }
+  /me/submissions/{id}:
+    get:
+      tags: [memorization]
+      summary: Detail setoran (+ presigned URL audio + feedback ustadz)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: "OK — ACL: pemilik / ustadz berhak / admin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /me/memorization/progress:
+    get:
+      tags: [memorization]
+      summary: Rollup progress hafalan per surah
+      responses:
+        "200": { description: OK }
+  /ustadz/memorization/queue:
+    get:
+      tags: [memorization]
+      summary: "Antrean review (cursor; default PENDING tanpa ustadz + IN_REVIEW milik saya)"
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [PENDING, IN_REVIEW]}}
+        - {name: limit, in: query, schema: {type: integer, default: 20}}
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        "200": { description: OK }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /memorization/submissions/{id}/review:
+    post:
+      tags: [memorization]
+      summary: "Submit review: PENDING→IN_REVIEW (claim) atau verdict PASSED/REVISION/REJECTED (+notes/voice)"
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: {type: string, enum: [CLAIM, SUBMIT]}
+                verdict: {type: string, enum: [PASSED, REVISION, REJECTED]}
+                notes: {type: string}
+                reply_audio_media_id: {type: integer}
+      responses:
+        "200": { description: OK — trigger notif santri + activity_event }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  # ---------------- KHATMIL ----------------
+  /khatmil/campaigns:
+    get:
+      tags: [khatmil]
+      summary: Daftar campaign (status param)
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [DRAFT, SCHEDULED, ACTIVE, COMPLETED, CANCELLED]}}
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [khatmil]
+      summary: Buat campaign (admin — khatmil.manage)
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CampaignUpsert" }
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+  /khatmil/campaigns/{id}:
+    get:
+      tags: [khatmil]
+      summary: Detail campaign + peta juz + progress agregat (cache)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+    patch:
+      tags: [khatmil]
+      summary: Update campaign (admin)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CampaignUpsert" }
+      responses:
+        "200": { description: OK }
+  /khatmil/campaigns/{id}/join:
+    post:
+      tags: [khatmil]
+      summary: Join campaign
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /khatmil/campaigns/{id}/juz/claim:
+    post:
+      tags: [khatmil]
+      summary: "Klaim juz (ODKU + unique marker-aktif; konflik → 409; body kosong = auto-assign juz kosong)"
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                juz: {type: integer, minimum: 1, maximum: 30}
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /khatmil/assignments/{id}/progress:
+    post:
+      tags: [khatmil]
+      summary: "Post progress (pages_read, minutes_read; rate-limit; juz COMPLETED bila memenuhi definisi 0009)"
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pages_read, minutes_read]
+              properties:
+                pages_read: {type: integer, minimum: 1, maximum: 22}
+                minutes_read: {type: integer, minimum: 1, maximum: 1440}
+                note: {type: string}
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /me/khatmil/assignments:
+    get:
+      tags: [khatmil]
+      summary: Assignment juz saya (semua campaign aktif)
+      responses:
+        "200": { description: OK }
+  /khatmil/campaigns/{id}/participants:
+    get:
+      tags: [khatmil]
+      summary: Peserta campaign (admin/moderasi)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+
+  # ---------------- QUESTIONS ----------------
+  /question-categories:
+    get:
+      tags: [questions]
+      summary: Kategori tanya (public)
+      security: []
+      responses:
+        "200": { description: OK }
+  /questions:
+    post:
+      tags: [questions]
+      summary: Buat pertanyaan (anonim opsional; auto-assign least-load per kategori)
+      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category_id, title]
+              properties:
+                category_id: {type: integer}
+                title: {type: string, minLength: 5, maxLength: 200}
+                body: {type: string}
+                is_anonymous: {type: boolean, default: false}
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /me/questions:
+    get:
+      tags: [questions]
+      summary: Pertanyaan saya (identitas selalu tampil utk pemilik)
+      parameters: [{name: limit, in: query, schema: {type: integer}}, {name: cursor, in: query, schema: {type: string}}]
+      responses:
+        "200": { description: OK }
+  /questions/{id}:
+    get:
+      tags: [questions]
+      summary: "Detail thread (ACL: pemilik [identitas penuh] / ustadz assigned [anonim bila is_anonymous] / moderator / admin)"
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /questions/{id}/messages:
+    post:
+      tags: [questions]
+      summary: Kirim pesan (TEXT/VOICE/IMAGE/FILE; voice/gambar via media_id presign; Idempotency-Key)
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type: {type: string, enum: [TEXT, VOICE, IMAGE, FILE]}
+                content: {type: string}
+                media_id: {type: integer}
+                duration_ms: {type: integer}
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+  /questions/{id}/close:
+    post:
+      tags: [questions]
+      summary: Tutup pertanyaan (pemilik)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /questions/{id}/answer:
+    post:
+      tags: [questions]
+      summary: Finalisasi jawaban ustadz (status → ANSWERED)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK — trigger notif santri }
+  /questions/{id}/publish-request:
+    post:
+      tags: [questions]
+      summary: "Minta publikasi (status → PUBLISH_REQUESTED — TIDAK langsung PUBLISHED)"
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /ustadz/questions/inbox:
+    get:
+      tags: [questions]
+      summary: Inbox ustadz (ASSIGNED ke saya)
+      parameters: [{name: limit, in: query, schema: {type: integer}}, {name: cursor, in: query, schema: {type: string}}]
+      responses:
+        "200": { description: OK }
+  /questions/archive:
+    get:
+      tags: [questions]
+      summary: Arsip publik (PUBLISHED) + disclaimer; search FULLTEXT q=
+      security: []
+      parameters:
+        - {name: q, in: query, schema: {type: string}}
+        - {name: category, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer}}
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        "200": { description: OK }
+  /questions/moderation:
+    get:
+      tags: [questions]
+      summary: Antrean moderation (PUBLISH_REQUESTED dkk — question.moderate)
+      parameters: [{name: status, in: query, schema: {type: string}}]
+      responses:
+        "200": { description: OK }
+  /questions/{id}/publish:
+    post:
+      tags: [questions]
+      summary: Approve publish (question.publish.moderate → PUBLISHED + disclaimer + audit)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /questions/{id}/reject-publish:
+    post:
+      tags: [questions]
+      summary: Reject publish (→ REJECTED + alasan audit)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: {type: string}
+      responses:
+        "200": { description: OK }
+
+  # ---------------- MEDIA (modul 14) ----------------
+  /media/uploads:
+    post:
+      tags: [media]
+      summary: "Langkah 1: minta presigned PUT URL (short-lived ≤15 mnt) + row media UPLOADING"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, mime_type, byte_size]
+              properties:
+                kind: {type: string, enum: [AUDIO, IMAGE, VIDEO, DOCUMENT]}
+                mime_type: {type: string, example: audio/mp4}
+                byte_size: {type: integer}
+                duration_ms: {type: integer}
+      responses:
+        "201":
+          description: media id + upload_url
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Envelope"
+                  - type: object
+                    properties:
+                      data: { $ref: "#/components/schemas/MediaUpload" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /media/uploads/{id}/complete:
+    post:
+      tags: [media]
+      summary: "Langkah 3: konfirmasi upload selesai (server validasi object: magic bytes/MIME/size/duration) → READY"
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: READY }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+  /media/{id}:
+    get:
+      tags: [media]
+      summary: "Metadata + presigned URL fresh (ACL per konteks: pemilik/ustadz berhak/admin — Bagian III keputusan #7)"
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK — storage_key TIDAK pernah keluar }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  # ---------------- NOTIFICATIONS ----------------
+  /me/notifications:
+    get:
+      tags: [notifications]
+      summary: Inbox notifikasi
+      parameters: [{name: unread_only, in: query, schema: {type: boolean}}, {name: limit, in: query, schema: {type: integer}}, {name: cursor, in: query, schema: {type: string}}]
+      responses:
+        "200": { description: OK }
+  /me/notifications/{id}/read:
+    post:
+      tags: [notifications]
+      summary: Tandai dibaca
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /me/notifications/read-all:
+    post:
+      tags: [notifications]
+      summary: Tandai semua dibaca
+      responses:
+        "200": { description: OK }
+
+  # ---------------- CMS (publik) ----------------
+  /cms/banners:
+    get:
+      tags: [cms]
+      summary: Banner aktif (posisi)
+      security: []
+      responses:
+        "200": { description: OK }
+  /cms/articles:
+    get:
+      tags: [cms]
+      summary: Artikel published
+      security: []
+      parameters: [{name: category, in: query, schema: {type: string}}, {name: limit, in: query, schema: {type: integer}}, {name: cursor, in: query, schema: {type: string}}]
+      responses:
+        "200": { description: OK }
+  /cms/articles/{slug}:
+    get:
+      tags: [cms]
+      summary: Detail artikel
+      security: []
+      parameters: [{name: slug, in: path, required: true, schema: {type: string}}]
+      responses:
+        "200": { description: OK }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /cms/announcements:
+    get:
+      tags: [cms]
+      summary: Pengumuman aktif
+      security: []
+      responses:
+        "200": { description: OK }
+  /cms/faqs:
+    get:
+      tags: [cms]
+      summary: FAQ aktif
+      security: []
+      responses:
+        "200": { description: OK }
+
+  # ---------------- ADMIN ----------------
+  /admin/users:
+    get:
+      tags: [admin]
+      summary: Daftar pengguna (users.read; filter q/status/role)
+      parameters:
+        - {name: q, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string}}
+        - {name: role, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer}}
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        "200": { description: OK }
+  /admin/users/{id}:
+    patch:
+      tags: [admin]
+      summary: Update user (status akun, role — users.manage; audit)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: {type: string, enum: [PENDING_VERIFICATION, ACTIVE, SUSPENDED, DEACTIVATED]}
+                add_role: {type: string}
+                remove_role: {type: string}
+      responses:
+        "200": { description: OK }
+  /admin/learning/materials:
+    post:
+      tags: [admin]
+      summary: CRUD materi (learning.manage) — POST create; PATCH/DELETE via /{id}
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MaterialUpsert" }
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+  /admin/learning/materials/{id}:
+    patch:
+      tags: [admin]
+      summary: Update materi
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MaterialUpsert" }
+      responses:
+        "200": { description: OK }
+    delete:
+      tags: [admin]
+      summary: Arsipkan materi (soft → ARCHIVED)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /admin/cms/{entity}:
+    parameters:
+      - {name: entity, in: path, required: true, schema: {type: string, enum: [articles, banners, announcements, faqs, article-categories]}}
+    post:
+      tags: [admin]
+      summary: Create entity CMS (cms.manage)
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        "201": { $ref: "#/components/responses/Created" }
+  /admin/cms/{entity}/{id}:
+    parameters:
+      - {name: entity, in: path, required: true, schema: {type: string, enum: [articles, banners, announcements, faqs, article-categories]}}
+      - {name: id, in: path, required: true, schema: {type: integer}}
+    patch:
+      tags: [admin]
+      summary: Update entity CMS
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        "200": { description: OK }
+    delete:
+      tags: [admin]
+      summary: Hapus entity CMS
+      responses:
+        "200": { description: OK }
+  /admin/dashboard:
+    get:
+      tags: [admin]
+      summary: "Dashboard agregat (dashboard.view): santri aktif, time-series ngaji (activity_events), khatmil progress, SLA tanya"
+      responses:
+        "200": { description: OK }
+  /admin/settings:
+    get:
+      tags: [admin]
+      summary: Semua settings (settings.manage)
+      responses:
+        "200": { description: OK }
+  /admin/settings/{key}:
+    put:
+      tags: [admin]
+      summary: Set nilai setting (cache invalidasi on-write)
+      parameters: [{name: key, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        "200": { description: OK }
+  /admin/audit-logs:
+    get:
+      tags: [admin]
+      summary: Query audit log (audit.read; filter actor/module/entity/date)
+      parameters:
+        - {name: actor_id, in: query, schema: {type: integer}}
+        - {name: module, in: query, schema: {type: string}}
+        - {name: entity_type, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer}}
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        "200": { description: OK }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    Created:
+      description: Created (201)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Envelope" }
+    Unauthorized:
+      description: Token hilang/expired
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: "Tidak punya permission / gate (ustadz belum verified, akun belum ACTIVE, app_update_required)"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Tidak ditemukan
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: Konflik (juz sudah diklaim, dsb)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unprocessable:
+      description: Validasi gagal
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: Terlalu banyak request (429)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: {type: string, example: conflict}
+        message: {type: string}
+        details: {}
+    Envelope:
+      type: object
+      required: [data]
+      properties:
+        data: {}
+        meta:
+          type: object
+          properties:
+            pagination:
+              type: object
+              properties:
+                next_cursor: {type: [string, "null"]}
+                has_more: {type: boolean}
+    EnvelopeList:
+      type: object
+      required: [data]
+      properties:
+        data: {type: array, items: {}}
+        meta:
+          type: object
+    AppVersion:
+      type: object
+      properties:
+        app_id: {type: string}
+        min_build: {type: integer}
+        latest_build: {type: integer}
+        update_required: {type: boolean}
+        url_apk: {type: [string, "null"]}
+    UserPublic:
+      type: object
+      properties:
+        id: {type: integer}
+        phone: {type: [string, "null"]}
+        email: {type: [string, "null"]}
+        account_type: {type: string}
+        status: {type: string}
+        roles: {type: array, items: {type: string}}
+        full_name: {type: [string, "null"]}
+        photo_media_id: {type: [integer, "null"]}
+    ProfileUpsert:
+      type: object
+      properties:
+        full_name: {type: string}
+        gender: {type: string, enum: [MALE, FEMALE]}
+        birth_date: {type: string, format: date}
+        address_text: {type: string}
+        city: {type: string}
+        province: {type: string}
+        photo_media_id: {type: integer}
+        bio: {type: string}
+    Surah:
+      type: object
+      properties:
+        id: {type: integer}
+        name_arabic: {type: string}
+        name_latin: {type: string}
+        name_id: {type: string}
+        ayah_count: {type: integer}
+        revelation: {type: string, enum: [MAKKAH, MADINAH]}
+    Ayah:
+      type: object
+      properties:
+        id: {type: integer}
+        surah_id: {type: integer}
+        ayah_number: {type: integer}
+        text_uthmani: {type: string}
+        text_imlaei: {type: [string, "null"]}
+        juz: {type: integer}
+        hizb: {type: [integer, "null"]}
+        page: {type: integer}
+        sajda: {type: boolean}
+        translation: {type: [string, "null"]}
+    MediaUpload:
+      type: object
+      properties:
+        media_id: {type: integer}
+        upload_url: {type: string, description: presigned PUT S3 ≤15 menit}
+        expires_at: {type: string, format: date-time}
+    CampaignUpsert:
+      type: object
+      properties:
+        slug: {type: string}
+        name: {type: string}
+        description: {type: string}
+        mode: {type: string, enum: [PARALLEL, SEQUENTIAL]}
+        target_khataman: {type: integer}
+        period_start: {type: string, format: date}
+        period_end: {type: string, format: date}
+        min_minutes_per_juz: {type: integer, minimum: 1, maximum: 600}
+        require_manual_verification: {type: boolean}
+        max_participants: {type: [integer, "null"]}
+        status: {type: string, enum: [DRAFT, SCHEDULED, ACTIVE, COMPLETED, CANCELLED]}
+    MaterialUpsert:
+      type: object
+      properties:
+        slug: {type: string}
+        title: {type: string}
+        tajwid_rule_code: {type: [string, "null"]}
+        content_md: {type: string}
+        cover_media_id: {type: [integer, "null"]}
+        status: {type: string, enum: [DRAFT, PUBLISHED, ARCHIVED]}
