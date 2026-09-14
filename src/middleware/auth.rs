@@ -40,6 +40,50 @@ impl CurrentUser {
     }
 }
 
+/// Extractor opsional utk endpoint publik yang ingin tahu siapa pemanggil (mis. learning).
+/// Token hilang/invalid => None (anonymous); tidak pernah 401.
+#[derive(Debug, Clone)]
+pub struct OptionalUser(pub Option<CurrentUser>);
+
+impl FromRequestParts<AppState> for OptionalUser {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let token = parts
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "));
+        let Some(token) = token else { return Ok(OptionalUser(None)) };
+        let Ok(claims) = decode_access(&state.jwt_secret, token) else {
+            return Ok(OptionalUser(None));
+        };
+        let cu = try_current_user(state, claims).await.ok();
+        Ok(OptionalUser(cu))
+    }
+}
+
+async fn try_current_user(state: &AppState, claims: crate::modules::auth::token::Claims) -> Result<CurrentUser, AppError> {
+    let (status,): (String,) = sqlx::query_as("SELECT status FROM users WHERE id = ?")
+        .bind(claims.sub)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|_| AppError::Unauthorized("akun tidak ditemukan".into()))?;
+    if status == "DELETED" {
+        return Err(AppError::Unauthorized("akun sudah dihapus".into()));
+    }
+    let perms: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT p.code FROM user_roles ur          JOIN role_permissions rp ON rp.role_id = ur.role_id          JOIN permissions p ON p.id = rp.permission_id WHERE ur.user_id = ?")
+        .bind(claims.sub)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| { tracing::error!("rbac query: {e}"); AppError::Internal("rbac".into()) })?;
+    Ok(CurrentUser {
+        user_id: claims.sub, session_id: claims.sid, status,
+        permissions: perms.into_iter().map(|p| p.0).collect(),
+    })
+}
+
 impl FromRequestParts<AppState> for CurrentUser {
     type Rejection = AppError;
 

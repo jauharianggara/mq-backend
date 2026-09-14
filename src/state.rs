@@ -13,6 +13,8 @@ pub struct AppState {
     pub jwt_secret: Arc<String>,
     pub storage: Option<Arc<Storage>>,
     dev_expose_tokens: bool,
+    /// cache string generik in-process (mis. quran:surahs 24h)
+    pub cache_str: Cache<&'static str, std::sync::Arc<String>>,
     /// gate resend-verification 60s per user (in-process — keputusan #13)
     resend_gate_cache: Cache<i64, ()>,
 }
@@ -39,6 +41,9 @@ impl AppState {
                 .unwrap_or(false),
             resend_gate_cache: Cache::builder()
                 .time_to_live(std::time::Duration::from_secs(60))
+                .build(),
+            cache_str: Cache::builder()
+                .time_to_live(std::time::Duration::from_secs(24 * 3600))
                 .build(),
         }
     }
