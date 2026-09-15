@@ -25,8 +25,8 @@ pub struct Q {
 pub async fn list(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<Q>) -> Result<Response, AppError> {
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
     let unread = q.unread_only.unwrap_or(false);
-    let rows: Vec<(i64, Option<String>, String, String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT id, template_code, title, body, CAST(data AS CHAR), DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') \
+    let rows: Vec<(i64, Option<String>, String, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, template_code, title, body, CAST(data AS CHAR), DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(read_at, '%Y-%m-%dT%H:%i:%sZ') \
          FROM user_notifications WHERE user_id = ? AND (? IS NULL OR id < ?) \
          AND (? = 0 OR read_at IS NULL) ORDER BY id DESC LIMIT ?")
         .bind(cu.user_id).bind(q.cursor).bind(q.cursor).bind(unread as i8).bind((limit + 1) as i64)
@@ -36,6 +36,7 @@ pub async fn list(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<Q
         "id": r.0, "template_code": r.1, "title": r.2, "body": r.3,
         "data": r.4.as_deref().and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok()),
         "created_at": r.5,
+        "read_at": r.6,
     })).collect();
     let next = if has_more { items.last().and_then(|i| i.get("id")).and_then(|v| v.as_i64()).map(|v| v.to_string()) } else { None };
     Ok((StatusCode::OK, Json(json!({
