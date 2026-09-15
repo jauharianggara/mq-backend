@@ -56,8 +56,8 @@ fn pct(part: i64, total: i64) -> Option<f64> {
 // =====================================================================
 
 pub async fn list_campaigns(pool: &MySqlPool, status: Option<String>) -> Result<Vec<CampaignOut>, AppError> {
-    let rows: Vec<(i64, String, String, String, String, i64, i64, i8, i64, i64, f64)> = sqlx::query_as(
-        "SELECT c.id, c.slug, c.name, c.mode, c.status, c.target_khataman, c.min_minutes_per_juz, c.require_manual_verification, \
+    let rows: Vec<(i64, String, String, Option<String>, Option<i64>, String, String, i64, i64, i8, i64, i64, f64)> = sqlx::query_as(
+        "SELECT c.id, c.slug, c.name, c.description, c.max_participants, c.mode, c.status, c.target_khataman, c.min_minutes_per_juz, c.require_manual_verification, \
          (SELECT COUNT(*) FROM khatmil_participants p WHERE p.campaign_id = c.id), \
          (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.campaign_id = c.id AND a.status = 'COMPLETED'), \
          CAST(IFNULL(ROUND(100.0 * (SELECT COUNT(*) FROM khatmil_juz_assignments a2 WHERE a2.campaign_id = c.id AND a2.status = 'COMPLETED') / 30, 1), 0) AS DOUBLE) \
@@ -65,9 +65,9 @@ pub async fn list_campaigns(pool: &MySqlPool, status: Option<String>) -> Result<
         .bind(status.as_deref()).bind(status.as_deref())
         .fetch_all(pool).await.map_err(dberr)?;
     Ok(rows.into_iter().map(|r| CampaignOut {
-        id: r.0, slug: r.1, name: r.2, mode: r.3, status: r.4, target_khataman: r.5,
-        min_minutes_per_juz: r.6, require_manual_verification: r.7 != 0,
-        participants: r.8, juz_completed: r.9, progress_pct: r.10,
+        id: r.0, slug: r.1, name: r.2, description: r.3, max_participants: r.4, mode: r.5, status: r.6,
+        target_khataman: r.7, min_minutes_per_juz: r.8, require_manual_verification: r.9 != 0,
+        participants: r.10, juz_completed: r.11, progress_pct: r.12,
     }).collect())
 }
 
@@ -142,16 +142,16 @@ fn parse_date(d: Option<&str>) -> Result<Option<chrono::NaiveDate>, AppError> {
 // =====================================================================
 
 pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail, AppError> {
-    let base: Option<(i64, String, String, String, String, i64, i64, i8, i64, i64, f64, Option<String>, Option<String>)> =
+    let base: Option<(i64, String, String, Option<String>, Option<i64>, String, String, i64, i64, i8, i64, i64, f64, Option<String>, Option<String>)> =
         sqlx::query_as(
-            "SELECT c.id, c.slug, c.name, c.mode, c.status, c.target_khataman, c.min_minutes_per_juz, c.require_manual_verification, \
+            "SELECT c.id, c.slug, c.name, c.description, c.max_participants, c.mode, c.status, c.target_khataman, c.min_minutes_per_juz, c.require_manual_verification, \
              (SELECT COUNT(*) FROM khatmil_participants p WHERE p.campaign_id = c.id), \
              (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.campaign_id = c.id AND a.status = 'COMPLETED'), \
              CAST(IFNULL(ROUND(100.0 * (SELECT COUNT(*) FROM khatmil_juz_assignments a2 WHERE a2.campaign_id = c.id AND a2.status = 'COMPLETED') / 30, 1), 0) AS DOUBLE), \
              DATE_FORMAT(c.period_start, '%Y-%m-%d'), DATE_FORMAT(c.period_end, '%Y-%m-%d') \
              FROM khatmil_campaigns c WHERE c.id = ?")
         .bind(id).fetch_optional(pool).await.map_err(dberr)?;
-    let (cid, slug, name, mode, status, target, minmin, rmv, participants, completed, pctv, ps, pe) = base
+    let (cid, slug, name, descr, maxp, mode, status, target, minmin, rmv, participants, completed, pctv, ps, pe) = base
         .ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
     // peta 30 juz — assignment terbaru per juz apa pun statusnya (juz COMPLETED tetap terlihat)
     let rows: Vec<(i64, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<String>, i64, Option<i64>)> =
@@ -178,7 +178,7 @@ pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail
     }).collect();
     Ok(CampaignDetail {
         campaign: CampaignOut {
-            id: cid, slug, name, mode, status, target_khataman: target,
+            id: cid, slug, name, description: descr, max_participants: maxp, mode, status, target_khataman: target,
             min_minutes_per_juz: minmin, require_manual_verification: rmv != 0,
             participants, juz_completed: completed, progress_pct: pctv,
         },

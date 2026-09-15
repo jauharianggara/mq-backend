@@ -34,6 +34,8 @@ pub struct CampaignOut {
     pub id: i64,
     pub slug: String,
     pub name: String,
+    pub description: Option<String>,
+    pub max_participants: Option<i64>,
     pub mode: String,
     pub status: String,
     pub target_khataman: i64,
