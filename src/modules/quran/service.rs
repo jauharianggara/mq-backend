@@ -131,3 +131,27 @@ pub async fn delete_bookmark(pool: &MySqlPool, user_id: i64, ayah_id: i64) -> Re
     }
     Ok(())
 }
+
+// ===================== F0c: ayat per JUZ (khatmil reader mobile) =====================
+
+pub async fn juz_ayahs(pool: &MySqlPool, juz: i64, translator: &str) -> Result<JuzAyahsOut, AppError> {
+    if !(1..=30).contains(&juz) {
+        return Err(AppError::NotFound("juz tidak ada (1-30)".into()));
+    }
+    let rows: Vec<(i64, i64, String, String, i64, String, Option<String>, i64, i64, Option<String>)> = sqlx::query_as(
+        "SELECT a.id, a.surah_id, s.name_latin, s.name_arabic, a.ayah_number, a.text_uthmani, a.text_imlaei, a.page, a.juz, \
+         (SELECT t.text FROM quran_translations t WHERE t.ayah_id = a.id AND t.translator_code = ?) \
+         FROM quran_ayahs a JOIN quran_surahs s ON s.id = a.surah_id \
+         WHERE a.juz = ? ORDER BY a.surah_id, a.ayah_number")
+        .bind(translator).bind(juz)
+        .fetch_all(pool).await.map_err(dberr)?;
+    let total = rows.len() as i64;
+    Ok(JuzAyahsOut {
+        juz,
+        total_ayat: total,
+        ayahs: rows.into_iter().map(|r| JuzAyahOut {
+            id: r.0, surah_id: r.1, surah_name_latin: r.2, surah_name_arabic: r.3, ayah_number: r.4,
+            text_uthmani: r.5, text_imlaei: r.6, page: r.7, juz: r.8, translation: r.9,
+        }).collect(),
+    })
+}

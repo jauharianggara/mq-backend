@@ -60,18 +60,28 @@ pub async fn claim(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i
 }
 
 pub async fn participants(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
-    cu.require("khatmil.manage")?;
+    // khatmil.read (bukan manage) — SANTRI juga boleh baca (leaderboard mobile, rev 3.2)
+    cu.require("khatmil.read")?;
     Ok(ok(svc::participants(&st.pool, id).await?, StatusCode::OK))
+}
+
+#[derive(Deserialize)]
+pub struct ActivityQ { pub limit: Option<i64> }
+
+pub async fn activity(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>, Query(q): Query<ActivityQ>) -> Result<Response, AppError> {
+    cu.require("khatmil.read")?;
+    let limit = q.limit.unwrap_or(50).clamp(1, 100);
+    Ok(ok(svc::activity(&st.pool, id, limit).await?, StatusCode::OK))
 }
 
 pub async fn post_progress(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>, Json(req): Json<ProgressReq>) -> Result<Response, AppError> {
     cu.require("khatmil.join")?;
-    // rate-limit progress in-process (keputusan #13 — BUKAN di DB): 1 post / 30 detik / user
+    // rate-limit in-process 5 dtk (rev 3.3: posisi idempotent — spam tak berbahaya; auto-save reader mobile perlu interval pendek)
     if !st.khatmil_progress_gate(&cu.user_id) {
         return Err(AppError::RateLimited);
     }
-    let a = svc::post_progress(&st.pool, cu.user_id, id, req).await?;
-    Ok(ok(a, StatusCode::CREATED))
+    let (a, created) = svc::post_progress(&st.pool, cu.user_id, id, req).await?;
+    Ok(ok(a, if created { StatusCode::CREATED } else { StatusCode::OK }))
 }
 
 pub async fn my_assignments(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {

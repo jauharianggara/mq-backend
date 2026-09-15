@@ -102,6 +102,9 @@ const SETTINGS: &[(&str, &str, &str)] = &[
     ("visit_location_fresh_hours", "6", "Lokasi ustadz lebih tua dari N jam tidak muncul di nearby"),
     ("visit_invoice_duration_sec", "7200", "Masa berlaku invoice Xendit (detik)"),
     ("visit_minor_booking_policy", "\"guardian_required\"", "Flag kebijakan anak (live review; gate wali = backlog, belum berefek)"),
+    // --- Khatmil: pengingat juz mangkrak (plan admin rev 3.3 F1.8) ---
+    ("khatmil_reminder_enabled", "false", "Kill-switch pengingat otomatis juz mangkrak (default OFF — admin aktifkan dari Pengaturan)"),
+    ("khatmil_reminder_stale_days", "3", "Juz dianggap mangkrak bila terakhir lapor > N hari (0 = langsung)"),
 ];
 
 /// Bagian V: master jenis layanan kunjungan (id TINYINT tetap — jangan reorder)
@@ -122,6 +125,8 @@ const VISIT_TEMPLATES: &[(&str, &str, &str)] = &[
     ("VISIT_COMPLETED_PLEASE_REVIEW", "Kunjungan selesai", "Alhamdulillah, kunjungan {{schedule}} selesai. Beri rating & catatan untuk ustadz Anda."),
     ("VISIT_REVIEW_USTADZ_PENDING", "Nilai santri Anda", "Kunjungan {{schedule}} sudah selesai. Beri rating & catatan untuk santri Anda (privat, double-blind)."),
     ("VISIT_REFUND_PENDING_MANUAL", "Refund manual diperlukan", "Payment {{external_id}} butuh refund manual dari dashboard Xendit ({{reason}}). Tandai setelah selesai."),
+    // Khatmil: pengingat juz mangkrak (plan admin rev 3.3 F1.8)
+    ("KHATMIL_JUZ_STALE", "Pengingat Juz", "Juz {{juz}} di campaign {{campaign}} belum selesai — yuk lanjutkan bacaannya"),
 ];
 
 async fn q(pool: &sqlx::MySqlPool, sql: &str, binds: &[&str]) {

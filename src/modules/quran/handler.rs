@@ -94,3 +94,27 @@ pub async fn delete_bookmark(cu: CurrentUser, State(st): State<AppState>, Path(a
     svc::delete_bookmark(&st.pool, cu.user_id, ayah_id).await?;
     Ok(ok(json!({ "deleted": true }), StatusCode::OK))
 }
+
+// ===================== F0c: GET /quran/juzs/{n}/ayahs (khatmil reader) =====================
+
+#[derive(Deserialize)]
+pub struct JuzAyahQ {
+    #[serde(default = "default_translator")]
+    pub translation: String,
+}
+
+pub async fn juz_ayahs(State(st): State<AppState>, Path(n): Path<i64>, Query(q): Query<JuzAyahQ>) -> Result<Response, AppError> {
+    if !(1..=30).contains(&n) {
+        return Err(AppError::NotFound("juz tidak ada (1-30)".into()));
+    }
+    // cache in-process 24h per (juz, translator) — pola quran:surahs
+    let ckey: &'static str = Box::leak(format!("quran:juz:{n}:{}", q.translation).into_boxed_str());
+    if let Some(cached) = st.cache_str.get(&ckey) {
+        let body: serde_json::Value = serde_json::from_str(&cached).unwrap_or_default();
+        return Ok((StatusCode::OK, Json(body)).into_response());
+    }
+    let out = svc::juz_ayahs(&st.pool, n, &q.translation).await?;
+    let body = json!({ "data": out, "meta": {} });
+    st.cache_str.insert(ckey, std::sync::Arc::new(body.to_string()));
+    Ok((StatusCode::OK, Json(body)).into_response())
+}

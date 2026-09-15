@@ -63,3 +63,26 @@ pub struct BookmarkOut {
     pub page: i64,
     pub note: Option<String>,
 }
+
+// ===================== F0c: ayat per JUZ (khatmil reader) =====================
+
+#[derive(Debug, Serialize)]
+pub struct JuzAyahOut {
+    pub id: i64,
+    pub surah_id: i64,
+    pub surah_name_latin: String,
+    pub surah_name_arabic: String,
+    pub ayah_number: i64,
+    pub text_uthmani: String,
+    pub text_imlaei: Option<String>,
+    pub page: i64,
+    pub juz: i64,
+    pub translation: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct JuzAyahsOut {
+    pub juz: i64,
+    pub total_ayat: i64,
+    pub ayahs: Vec<JuzAyahOut>,
+}
