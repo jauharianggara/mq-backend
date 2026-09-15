@@ -37,6 +37,9 @@ const PERMISSIONS: &[(&str, &str, &str)] = &[
     ("settings", "settings.manage", "Ubah settings"),
     ("audit", "audit.read", "Baca audit log"),
     ("rbac", "roles.manage", "Kelola roles & permissions"),
+    ("visits", "visits.book", "Santri: pesan ustadz terdekat, chat transaksi, review ustadz"),
+    ("visits", "ustadz.visits.manage", "Ustadz: settings kunjungan, tarif, confirm/decline/complete, review santri"),
+    ("visits", "visits.admin", "Admin: monitoring kunjungan + pembayaran Xendit + force actions + moderasi review"),
 ];
 
 /// role_code -> [permission codes] (sinkron docs/permissions.md)
@@ -46,26 +49,29 @@ const ROLE_PERMISSIONS: &[(&str, &[&str])] = &[
         "account.delete", "khatmil.read", "khatmil.manage", "question.moderate",
         "question.publish.moderate", "users.read", "users.manage", "learning.manage",
         "cms.manage", "dashboard.view", "settings.manage", "audit.read", "roles.manage",
+        "visits.admin",
     ]),
     ("ADMIN", &[
         "quran.read", "learning.read", "cms.read", "media.upload", "notification.read.self",
         "account.delete", "khatmil.read", "khatmil.manage", "question.moderate",
         "question.publish.moderate", "users.read", "users.manage", "learning.manage",
         "cms.manage", "dashboard.view", "settings.manage", "audit.read",
+        "visits.admin",
     ]),
     ("MODERATOR", &[
         "quran.read", "learning.read", "cms.read", "notification.read.self", "account.delete",
         "khatmil.read", "question.moderate", "question.publish.moderate", "users.read",
+        "visits.admin",   // fokus: moderasi review (hide/unhide) + monitoring
     ]),
     ("USTADZ", &[
         "quran.read", "learning.read", "cms.read", "media.upload", "notification.read.self",
         "account.delete", "khatmil.read", "memorization.review", "question.answer",
-        "ustadz.profile.self",
+        "ustadz.profile.self", "ustadz.visits.manage",
     ]),
     ("SANTRI", &[
         "quran.read", "learning.read", "cms.read", "media.upload", "notification.read.self",
         "account.delete", "memorization.submit", "khatmil.join", "khatmil.read",
-        "question.create",
+        "question.create", "visits.book",
     ]),
 ];
 
@@ -85,6 +91,37 @@ const SETTINGS: &[(&str, &str, &str)] = &[
     ("voice_note_max_mb", "10", "Batas ukuran file audio setoran (MB)"),
     ("voice_note_max_minutes", "5", "Batas durasi audio setoran (menit)"),
     ("question_moderation_required", "true", "Pertanyaan baru masuk antrean moderasi (opsional via settings)"),
+    // --- Bagian V: Pesan Ustadz (visits) ---
+    ("visit_enabled", "false", "Kill-switch modul Pesan Ustadz (default OFF sampai rilis)"),
+    ("visit_min_schedule_hours", "2", "Jadwal kunjungan minimal H+N jam dari sekarang"),
+    ("visit_max_schedule_days", "14", "Jadwal kunjungan maksimal H+N hari ke depan"),
+    ("visit_confirm_timeout_hours", "3", "Batas ustadz konfirmasi setelah dibayar; lewat = auto-decline + refund"),
+    ("visit_cancel_free_hours", "2", "Cancel santri >= N jam sebelum jadwal = full refund; < N = tanpa refund"),
+    ("visit_radius_km", "5", "Radius GLOBAL pencarian ustadz terdekat (diatur admin mq-admin)"),
+    ("visit_review_window_days", "7", "Window double-blind rating: reveal otomatis setelah N hari sejak COMPLETED"),
+    ("visit_location_fresh_hours", "6", "Lokasi ustadz lebih tua dari N jam tidak muncul di nearby"),
+    ("visit_invoice_duration_sec", "7200", "Masa berlaku invoice Xendit (detik)"),
+    ("visit_minor_booking_policy", "\"guardian_required\"", "Flag kebijakan anak (live review; gate wali = backlog, belum berefek)"),
+];
+
+/// Bagian V: master jenis layanan kunjungan (id TINYINT tetap — jangan reorder)
+const VISIT_SERVICE_TYPES: &[(i64, &str, &str, &str)] = &[
+    (1, "tahsin_privat", "Tahsin Privat", "Perbaikan bacaan Al-Qur'an satu-satu di rumah santri"),
+    (2, "murajaah", "Murajaah / Setoran Hafalan", "Muroja'ah hafalan bersama ustadz di lokasi"),
+    (3, "tahlil_yasinan", "Tahlil & Yasinan", "Menghadirkan ustadz untuk tahlil/yasinan keluarga"),
+    (4, "konsultasi", "Konsultasi", "Konsultasi agama/keluarga tatap muka"),
+];
+
+/// Bagian V: notif templates (placeholder {{...}}; deeplink di data JSON utk visit:{id})
+const VISIT_TEMPLATES: &[(&str, &str, &str)] = &[
+    ("VISIT_PAID_WAITING", "Permintaan kunjungan baru", "Santri memesan layanan {{service}} untuk {{schedule}}. Segera konfirmasi atau tolak (batas {{timeout}} jam)."),
+    ("VISIT_CONFIRMED", "Kunjungan dikonfirmasi", "Ustadz {{ustadz}} telah MENGONFIRMASI kunjungan {{service}} {{schedule}}. Kontak & chat kini terbuka."),
+    ("VISIT_DECLINED_REFUNDED", "Permintaan ditolak ustadz", "Ustadz menolak kunjungan {{schedule}}. Dana PENUH dikembalikan ke metode pembayaran Anda."),
+    ("VISIT_CANCELED", "Kunjungan dibatalkan", "Kunjungan {{schedule}} dibatalkan ({{by}}). {{refund_note}}"),
+    ("VISIT_REMINDER", "Pengingat kunjungan", "Kunjungan {{service}} bersama {{ustadz}} kurang {{hours}} jam lagi. Lokasi: {{label}}."),
+    ("VISIT_COMPLETED_PLEASE_REVIEW", "Kunjungan selesai", "Alhamdulillah, kunjungan {{schedule}} selesai. Beri rating & catatan untuk ustadz Anda."),
+    ("VISIT_REVIEW_USTADZ_PENDING", "Nilai santri Anda", "Kunjungan {{schedule}} sudah selesai. Beri rating & catatan untuk santri Anda (privat, double-blind)."),
+    ("VISIT_REFUND_PENDING_MANUAL", "Refund manual diperlukan", "Payment {{external_id}} butuh refund manual dari dashboard Xendit ({{reason}}). Tandai setelah selesai."),
 ];
 
 async fn q(pool: &sqlx::MySqlPool, sql: &str, binds: &[&str]) {
@@ -149,6 +186,23 @@ async fn main() {
     }
     println!("kategori: {} upsert", CATEGORIES.len());
 
+    // 4b. Bagian V: jenis layanan kunjungan (id fix, idempotent)
+    for (id, code, name, desc) in VISIT_SERVICE_TYPES {
+        q(&pool, "INSERT INTO visit_service_types (id, code, name, description, sort_order) \
+                  VALUES (?, ?, ?, ?, ?) AS new \
+                  ON DUPLICATE KEY UPDATE code = new.code, name = new.name, description = new.description, sort_order = new.sort_order",
+          &[&id.to_string(), code, name, desc, &id.to_string()]).await;
+    }
+    println!("visit_service_types: {} upsert", VISIT_SERVICE_TYPES.len());
+
+    // 4c. Bagian V: notif templates kunjungan
+    for (code, title, body) in VISIT_TEMPLATES {
+        q(&pool, "INSERT INTO notification_templates (code, title_template, body_template) VALUES (?, ?, ?) AS new \
+                  ON DUPLICATE KEY UPDATE title_template = new.title_template, body_template = new.body_template",
+          &[code, title, body]).await;
+    }
+    println!("visit templates: {} upsert", VISIT_TEMPLATES.len());
+
     // 5. Settings default
     for (key, value, desc) in SETTINGS {
         q(&pool, "INSERT INTO settings (`key`, value, description) VALUES (?, CAST(? AS JSON), ?) AS new \
@@ -199,6 +253,8 @@ async fn main() {
         ("role_permissions", "SELECT COUNT(*) FROM role_permissions"),
         ("kategori", "SELECT COUNT(*) FROM question_categories"),
         ("settings", "SELECT COUNT(*) FROM settings"),
+        ("visit_types", "SELECT COUNT(*) FROM visit_service_types"),
+        ("notif_templates", "SELECT COUNT(*) FROM notification_templates"),
     ] {
         let n: i64 = sqlx::query_scalar(sqlq).fetch_one(&pool).await.unwrap();
         println!("{label}: {n}");
