@@ -43,6 +43,7 @@ moka = { version = "0.12", features = ["future", "sync"] }
 governor = "0.10"
 
 # Object storage (MinIO via NSSM / R2)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
 aws-sdk-s3 = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
 

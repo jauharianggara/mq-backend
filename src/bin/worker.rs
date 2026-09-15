@@ -22,16 +22,19 @@ async fn main() {
         Some(s) => Some(mq_backend_lib::infrastructure::storage::build(s).await),
         None => None,
     };
+    // Bagian V: state ringan utk job visits (payment gateway + rate gates tak dipakai di sini)
+    let visit_state = mq_backend_lib::state::AppState::new(pool.clone(), &cfg).await;
 
     tracing::info!("mq-worker: mulai (poll 30s)");
     let mut tick: u64 = 0;
     loop {
         tick += 1;
         ensure_cleanup_job(&pool).await;
+        ensure_visit_jobs(&pool).await;
         recover_stale(&pool).await;
         let mut done = 0;
         while let Some((id, job_type, attempts)) = claim_next(&pool).await {
-            let r = execute(&pool, storage.as_ref(), &job_type).await;
+            let r = execute(&pool, storage.as_ref(), &job_type, &visit_state).await;
             finish(&pool, id, attempts, r).await;
             done += 1;
             if done > 50 { break; } // safety
@@ -50,6 +53,26 @@ async fn ensure_cleanup_job(pool: &MySqlPool) {
                  DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 HOUR), \
                  CONCAT('media-cleanup-', DATE_FORMAT(UTC_TIMESTAMP(), '%Y%m%d%H')))")
         .execute(pool).await;
+}
+
+/// Bagian V: job periodik visits — poll & reminder tiap 15 mnt, timeout & review-window tiap jam
+/// (dedupe_key periodik; INSERT IGNORE sadar utk scheduler idempotent).
+async fn ensure_visit_jobs(pool: &MySqlPool) {
+    for (job_type, dedupe, every) in [
+        ("visit.payment_poll", "DATE_FORMAT(UTC_TIMESTAMP(), '%Y%m%d%H%i')", "15 MINUTE"),
+        ("visit.reminder", "DATE_FORMAT(UTC_TIMESTAMP(), '%Y%m%d%H%i')", "15 MINUTE"),
+        ("visit.confirm_timeout", "DATE_FORMAT(UTC_TIMESTAMP(), '%Y%m%d%H')", "1 HOUR"),
+        ("visit.review_window", "DATE_FORMAT(UTC_TIMESTAMP(), '%Y%m%d%H')", "1 HOUR"),
+    ] {
+        let _ = sqlx::query(
+            &format!(
+                "INSERT IGNORE INTO scheduled_jobs (job_type, payload, status, run_at, dedupe_key) \
+                 VALUES ('{job_type}', CAST('{{}}' AS JSON), 'PENDING', \
+                         DATE_ADD(UTC_TIMESTAMP(), INTERVAL {every}), \
+                         CONCAT('{job_type}-', {dedupe}))"
+            ))
+            .execute(pool).await;
+    }
 }
 
 async fn recover_stale(pool: &MySqlPool) {
@@ -75,7 +98,7 @@ async fn claim_next(pool: &MySqlPool) -> Option<(i64, String, i64)> {
     Some((id, job_type, attempts))
 }
 
-async fn execute(pool: &MySqlPool, storage: Option<&mq_backend_lib::infrastructure::storage::Storage>, job_type: &str) -> Result<(), String> {
+async fn execute(pool: &MySqlPool, storage: Option<&mq_backend_lib::infrastructure::storage::Storage>, job_type: &str, visit_state: &mq_backend_lib::state::AppState) -> Result<(), String> {
     match job_type {
         "media.cleanup_orphan" => {
             let rows: Vec<(i64, String)> = sqlx::query_as(
@@ -92,6 +115,27 @@ async fn execute(pool: &MySqlPool, storage: Option<&mq_backend_lib::infrastructu
                 cleaned += 1;
             }
             tracing::info!("media.cleanup_orphan: {cleaned} row dibersihkan");
+            Ok(())
+        }
+        // ---- Bagian V: jobs visits ----
+        "visit.payment_poll" => {
+            let n = mq_backend_lib::modules::visits::payments::job_payment_poll(visit_state).await.map_err(|e| e.to_string())?;
+            tracing::info!("visit.payment_poll: {n} payment ditutup");
+            Ok(())
+        }
+        "visit.reminder" => {
+            let n = mq_backend_lib::modules::visits::payments::job_reminder(visit_state).await.map_err(|e| e.to_string())?;
+            if n > 0 { tracing::info!("visit.reminder: {n} kunjungan diingatkan"); }
+            Ok(())
+        }
+        "visit.confirm_timeout" => {
+            let n = mq_backend_lib::modules::visits::payments::job_confirm_timeout(visit_state).await.map_err(|e| e.to_string())?;
+            if n > 0 { tracing::info!("visit.confirm_timeout: {n} auto-decline + refund"); }
+            Ok(())
+        }
+        "visit.review_window" => {
+            let n = mq_backend_lib::modules::visits::payments::job_review_window(visit_state).await.map_err(|e| e.to_string())?;
+            if n > 0 { tracing::info!("visit.review_window: {n} review di-reveal"); }
             Ok(())
         }
         other => Err(format!("job_type tidak dikenal: {other}")),

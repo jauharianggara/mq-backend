@@ -11,3 +11,4 @@ pub mod questions;
 pub mod quran;
 pub mod ustadz;
 pub mod users;
+pub mod visits;

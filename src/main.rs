@@ -1,7 +1,7 @@
 use axum::middleware as axmw;
 use axum::routing::get;
 use axum::Json;
-use mq_backend_lib::modules::{admin, auth, cms, home, khatmil, learning, media, memorization, notifications, questions, quran, ustadz, users};
+use mq_backend_lib::modules::{admin, auth, cms, home, khatmil, learning, media, memorization, notifications, questions, quran, ustadz, users, visits};
 use mq_backend_lib::state::AppState;
 use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
@@ -54,6 +54,7 @@ async fn main() {
             .merge(ustadz::routes())
             .merge(memorization::routes())
             .merge(khatmil::routes())
+            .merge(visits::routes())
             .merge(questions::routes())
             .merge(notifications::routes())
             .merge(cms::routes())
