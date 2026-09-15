@@ -31,6 +31,7 @@ async fn main() {
         tick += 1;
         ensure_cleanup_job(&pool).await;
         ensure_visit_jobs(&pool).await;
+        ensure_khatmil_job(&pool).await;
         recover_stale(&pool).await;
         let mut done = 0;
         while let Some((id, job_type, attempts)) = claim_next(&pool).await {
@@ -73,6 +74,16 @@ async fn ensure_visit_jobs(pool: &MySqlPool) {
             ))
             .execute(pool).await;
     }
+}
+
+/// Khatmil: pengingat juz mangkrak harian 08:00 WIB (01:00 UTC) — dedupe_key per hari.
+async fn ensure_khatmil_job(pool: &MySqlPool) {
+    let _ = sqlx::query(
+        "INSERT IGNORE INTO scheduled_jobs (job_type, payload, status, run_at, dedupe_key) \
+         VALUES ('khatmil.stale_reminder', CAST('{}' AS JSON), 'PENDING', \
+                 TIMESTAMP(DATE(UTC_TIMESTAMP() + INTERVAL 1 DAY), '01:00:00'), \
+                 CONCAT('khatmil-stale-', DATE_FORMAT(UTC_TIMESTAMP(), '%Y%m%d')))")
+        .execute(pool).await;
 }
 
 async fn recover_stale(pool: &MySqlPool) {
@@ -136,6 +147,12 @@ async fn execute(pool: &MySqlPool, storage: Option<&mq_backend_lib::infrastructu
         "visit.review_window" => {
             let n = mq_backend_lib::modules::visits::payments::job_review_window(visit_state).await.map_err(|e| e.to_string())?;
             if n > 0 { tracing::info!("visit.review_window: {n} review di-reveal"); }
+            Ok(())
+        }
+        // ---- Khatmil: pengingat juz mangkrak (plan admin rev 3.3 F1.8) ----
+        "khatmil.stale_reminder" => {
+            let n = mq_backend_lib::modules::khatmil::service::job_stale_reminder(pool).await.map_err(|e| e.to_string())?;
+            if n > 0 { tracing::info!("khatmil.stale_reminder: {n} pengingat terkirim"); }
             Ok(())
         }
         other => Err(format!("job_type tidak dikenal: {other}")),

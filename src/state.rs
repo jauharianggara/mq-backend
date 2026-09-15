@@ -57,7 +57,7 @@ impl AppState {
                 .time_to_live(std::time::Duration::from_secs(5))
                 .build(),
             khatmil_progress_cache: Cache::builder()
-                .time_to_live(std::time::Duration::from_secs(30))
+                .time_to_live(std::time::Duration::from_secs(5)) // rev 3.3: 30s -> 5s (posisi idempotent; auto-save reader mobile)
                 .build(),
             visit_create_cache: Cache::builder()
                 .time_to_live(std::time::Duration::from_secs(30))
