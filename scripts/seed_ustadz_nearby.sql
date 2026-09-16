@@ -134,3 +134,27 @@ INSERT INTO ustadz_blackout_dates (ustadz_id, off_date, note) VALUES
   (@u5, DATE((UTC_TIMESTAMP() + INTERVAL 7 HOUR) + INTERVAL 1 DAY), 'Acara keluarga');
 
 SELECT 'seed selesai' AS status;
+
+-- ============ 6. Ustadz Ahmad Dahlan Munflih (~170 m, akun ustadz TESTING) ============
+-- Ketersediaan tiap hari 08:00-20:00 supaya gampang diuji kapan pun.
+INSERT INTO users (email, password_hash, account_type, status, email_verified_at)
+SELECT 'ustadz.dahlan.test@mq.local', u.password_hash, 'PENGURUS', 'ACTIVE', UTC_TIMESTAMP()
+FROM users u WHERE u.id = 2
+ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(users.id), status = 'ACTIVE';
+SET @u6 := LAST_INSERT_ID();
+INSERT INTO user_profiles (user_id, full_name, gender, city)
+VALUES (@u6, 'Ustadz Ahmad Dahlan Munflih', 'MALE', 'Bogor')
+ON DUPLICATE KEY UPDATE full_name = VALUES(full_name);
+INSERT INTO ustadz_profiles (user_id, code, title, verified_at)
+VALUES (@u6, 'ust-dahlan-test', 'Ustadz', UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE verified_at = IFNULL(verified_at, UTC_TIMESTAMP());
+INSERT INTO user_locations (user_id, lat, lng, accuracy_m, recorded_at)
+VALUES (@u6, -6.538500, 106.778500, 10, UTC_TIMESTAMP())
+ON DUPLICATE KEY UPDATE lat = VALUES(lat), lng = VALUES(lng), recorded_at = UTC_TIMESTAMP();
+INSERT INTO ustadz_visit_settings (ustadz_id, is_accepting, max_active_visits, price_per_hour)
+VALUES (@u6, 1, 5, 10000)
+ON DUPLICATE KEY UPDATE is_accepting = 1, price_per_hour = 10000, max_active_visits = 5;
+DELETE FROM ustadz_availability_slots WHERE ustadz_id = @u6;
+INSERT INTO ustadz_availability_slots (ustadz_id, weekday, start_minute, end_minute) VALUES
+  (@u6, 0, 480, 1200), (@u6, 1, 480, 1200), (@u6, 2, 480, 1200), (@u6, 3, 480, 1200),
+  (@u6, 4, 480, 1200), (@u6, 5, 480, 1200), (@u6, 6, 480, 1200);
