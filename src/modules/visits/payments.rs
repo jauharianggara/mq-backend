@@ -57,6 +57,8 @@ pub async fn issue_invoice_for_visit(state: &AppState, visit_id: i64) -> Result<
                         }
                     }
                 } else if let Some(u) = mock_url(&p.external_id) {
+                    // DEMO/MOCK: invoice tak pernah dibuka — tandai lunas seketika.
+                    apply_visit_paid(state, &p.external_id, None, Some("MOCK"), "{}").await?;
                     return Ok(Some(u));
                 }
             }
@@ -72,6 +74,10 @@ pub async fn issue_invoice_for_visit(state: &AppState, visit_id: i64) -> Result<
                     sqlx::query("UPDATE payments SET xendit_invoice_id = ? WHERE id = ?")
                         .bind(&inv.id).bind(p.id)
                         .execute(&state.pool).await.map_err(dberr)?;
+                    // DEMO/MOCK: tanpa halaman bayar nyata — langsung dianggap lunas.
+                    if state.payments.is_mock() {
+                        apply_visit_paid(state, &p.external_id, Some(&inv.id), Some("MOCK"), "{}").await?;
+                    }
                     Ok(Some(inv.invoice_url))
                 }
                 Err(e) => {
