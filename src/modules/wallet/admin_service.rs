@@ -98,13 +98,13 @@ pub async fn my_adjustments(pool: &MySqlPool, user_id: i64) -> Result<Vec<serde_
     })).collect())
 }
 
-/// Santri ACC penyesuaian -> saldo berubah + wallet_transactions ADJUST.
+/// Santri ACC penyesuaian -> saldo berubah + wallet_transactions ADJUST + notif admin.
 pub async fn accept_adjustment(pool: &MySqlPool, user_id: i64, adjustment_id: i64) -> Result<(), AppError> {
-    let row: Option<(i64, i64, i64)> = sqlx::query_as(
-        "SELECT id, amount, user_id FROM admin_wallet_adjustments \
+    let row: Option<(i64, i64, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT id, amount, user_id, admin_id FROM admin_wallet_adjustments \
          WHERE id = ? AND user_id = ? AND status = 'PENDING'")
         .bind(adjustment_id).bind(user_id).fetch_optional(pool).await.map_err(dberr)?;
-    let (adj_id, amount, _uid) = row.ok_or_else(|| AppError::NotFound("penyesuaian tidak ditemukan".into()))?;
+    let (adj_id, amount, _uid, admin_id) = row.ok_or_else(|| AppError::NotFound("penyesuaian tidak ditemukan".into()))?;
     // pastikan wallet ada (balance 0 bila belum pernah ada aktivitas)
     sqlx::query("INSERT IGNORE INTO wallets (user_id, balance) VALUES (?, 0)")
         .bind(user_id)
@@ -129,11 +129,16 @@ pub async fn accept_adjustment(pool: &MySqlPool, user_id: i64, adjustment_id: i6
     sqlx::query("UPDATE admin_wallet_adjustments SET status = 'ACCEPTED', handled_at = UTC_TIMESTAMP() WHERE id = ?")
         .bind(adj_id).execute(&mut *tx).await.map_err(dberr)?;
     tx.commit().await.map_err(dberr)?;
+    notify_adjustment_result(pool, adj_id, admin_id, user_id, true).await;
     Ok(())
 }
 
 /// Santri menolak penyesuaian.
 pub async fn reject_adjustment(pool: &MySqlPool, user_id: i64, adjustment_id: i64) -> Result<(), AppError> {
+    let row: Option<(Option<i64>,)> = sqlx::query_as(
+        "SELECT admin_id FROM admin_wallet_adjustments WHERE id = ? AND user_id = ? AND status = 'PENDING'")
+        .bind(adjustment_id).bind(user_id).fetch_optional(pool).await.map_err(dberr)?;
+    let (admin_id,) = row.ok_or_else(|| AppError::NotFound("penyesuaian tidak ditemukan / sudah diproses".into()))?;
     let n = sqlx::query(
         "UPDATE admin_wallet_adjustments SET status = 'REJECTED', handled_at = UTC_TIMESTAMP() \
          WHERE id = ? AND user_id = ? AND status = 'PENDING'")
@@ -142,7 +147,27 @@ pub async fn reject_adjustment(pool: &MySqlPool, user_id: i64, adjustment_id: i6
     if n == 0 {
         return Err(AppError::NotFound("penyesuaian tidak ditemukan / sudah diproses".into()));
     }
+    notify_adjustment_result(pool, adjustment_id, admin_id, user_id, false).await;
     Ok(())
+}
+
+/// Notifikasi hasil penyesuaian ke admin pengaju (SALDO_ADJUST_RESULT).
+async fn notify_adjustment_result(pool: &MySqlPool, adj_id: i64, admin_id: Option<i64>, user_id: i64, accepted: bool) {
+    let Some(admin_id) = admin_id else { return };
+    let name: String = sqlx::query_scalar(
+        "SELECT COALESCE(NULLIF(up.full_name,''), '(tanpa nama)') FROM users u \
+         LEFT JOIN user_profiles up ON up.user_id = u.id WHERE u.id = ?")
+        .bind(user_id).fetch_one(pool).await.unwrap_or_else(|_| "(tanpa nama)".into());
+    let _ = sqlx::query(
+        "INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
+         VALUES (?, 'SALDO_ADJUST_RESULT', ?, ?, CAST('{\"deeplink\":\"wallet-adjustments\"}' AS JSON), 'IN_APP')")
+        .bind(admin_id)
+        .bind(if accepted { "Penyesuaian saldo disetujui" } else { "Penyesuaian saldo ditolak" })
+        .bind(format!(
+            "{name} {} penyesuaian #{adj_id}. Buka Saldo > tab Penyesuaian utk detail.",
+            if accepted { "menyetujui" } else { "menolak" }
+        ))
+        .execute(pool).await;
 }
 
 /// Monitoring semua penyesuaian (utk halaman admin Saldo) — nama user + nama admin.
