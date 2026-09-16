@@ -523,9 +523,7 @@ pub async fn create_visit(
         Ok(r) => r.last_insert_id() as i64,
         Err(e) => {
             let m = format!("{e}");
-            if m.contains("uv_active_uq") {
-                return Err(AppError::Conflict("masih ada pesanan aktif — selesaikan/batalkan dulu".into()));
-            }
+            // 0023: uv_active_uq (max 1 pesanan aktif per santri) sudah dihapus — santri boleh beberapa pesanan.
             if m.contains("uv_client_uq") {
                 let vid: (i64,) = sqlx::query_as("SELECT id FROM ustadz_visits WHERE user_id = ? AND client_key = ?")
                     .bind(user_id).bind(idem_key).fetch_one(&state.pool).await.map_err(dberr)?;
