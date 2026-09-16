@@ -1,4 +1,4 @@
-//! Handler modul visits (Bagian V — Pesan Ustadz).
+//! Handler modul visits v2 (Panggil Ustadz).
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -17,15 +17,13 @@ fn ok<T: serde::Serialize>(data: T, status: StatusCode) -> Response {
 }
 
 fn paged<T: serde::Serialize>(items: Vec<T>, next: Option<String>) -> Response {
-    ok(json!({ "items": items, "meta": { "next_cursor": next } }), StatusCode::OK)
+    (StatusCode::OK, Json(json!({
+        "data": items,
+        "meta": { "pagination": { "next_cursor": next, "has_more": next.is_some() } }
+    }))).into_response()
 }
 
-#[derive(Deserialize)]
-pub struct NearbyQ {
-    pub lat: f64,
-    pub lng: f64,
-    pub service_type_id: Option<i64>,
-}
+// ===================== santri =====================
 
 #[derive(Deserialize)]
 pub struct ListQ {
@@ -33,24 +31,32 @@ pub struct ListQ {
     pub limit: Option<i64>,
 }
 
-// ===================== santri =====================
-
-pub async fn list_services(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
-    cu.require_active()?;
-    Ok(ok(svc::list_services(&st.pool).await?, StatusCode::OK))
-}
+#[derive(Deserialize)]
+pub struct NearbyQ { pub lat: f64, pub lng: f64 }
 
 pub async fn nearby(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<NearbyQ>) -> Result<Response, AppError> {
     cu.require("visits.book")?;
     cu.require_active()?;
-    // kill-switch dulu, baru rate-limit (off harus 403, bukan 429)
     if !svc::visit_enabled(&st.pool).await? {
         return Err(AppError::Forbidden("modul Pesan Ustadz sedang nonaktif".into()));
     }
     if !st.visit_nearby_gate(&cu.user_id) {
         return Err(AppError::RateLimited);
     }
-    Ok(ok(svc::nearby(&st, cu.user_id, q.lat, q.lng, q.service_type_id).await?, StatusCode::OK))
+    Ok(ok(svc::nearby(&st, q.lat, q.lng).await?, StatusCode::OK))
+}
+
+#[derive(Deserialize)]
+pub struct SlotsQ { pub ustadz_id: i64, pub date: String, pub hours: i64 }
+
+pub async fn slots(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<SlotsQ>) -> Result<Response, AppError> {
+    cu.require("visits.book")?;
+    cu.require_active()?;
+    if !(1..=8).contains(&q.hours) {
+        return Err(AppError::Unprocessable("durasi 1-8 jam".into()));
+    }
+    let slots = svc::slots_for_date(&st.pool, q.ustadz_id, &q.date, q.hours).await?;
+    Ok(ok(SlotsOut { date: q.date.clone(), hours: q.hours, slots }, StatusCode::OK))
 }
 
 pub async fn create_visit(
@@ -68,8 +74,8 @@ pub async fn create_visit(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::Unprocessable("header Idempotency-Key wajib (UUID per percobaan)".into()))?;
     let out = svc::create_visit(&st, cu.user_id, req, key).await?;
-    let replay = out.out.replay;
-    Ok(ok(out.out, if replay { StatusCode::OK } else { StatusCode::CREATED }))
+    let replay = out.replay;
+    Ok(ok(out.visit, if replay { StatusCode::OK } else { StatusCode::CREATED }))
 }
 
 pub async fn list_my_visits(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<ListQ>) -> Result<Response, AppError> {
@@ -94,16 +100,33 @@ pub async fn pay(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64
     if v.user_id != cu.user_id {
         return Err(AppError::NotFound("pesanan tidak ada".into()));
     }
-    let url = pay::issue_invoice(&st, id).await?;
+    let url = pay::issue_invoice_for_visit(&st, id).await?;
     Ok(ok(json!({ "invoice_url": url }), StatusCode::OK))
+}
+
+/// Bayar pakai deposit santri (kalau saldo cukup).
+pub async fn pay_deposit(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
+    cu.require("visits.book")?;
+    let v = svc::require_visit_access(&st.pool, &cu, id).await?;
+    if v.user_id != cu.user_id {
+        return Err(AppError::NotFound("pesanan tidak ada".into()));
+    }
+    if v.status != "REQUESTED" {
+        return Err(AppError::Conflict(format!("status {}, harus REQUESTED", v.status)));
+    }
+    let bal = crate::modules::wallet::service::balance(&st.pool, cu.user_id).await?;
+    if bal < v.price_total {
+        return Err(AppError::Unprocessable("saldo_tidak_cukup".into()));
+    }
+    crate::modules::wallet::service::debit(&st.pool, cu.user_id, v.price_total, "PAYMENT", "ustadz_visit", id).await?;
+    // tandai payment PAID (sumber deposit) + visit WAITING_CONFIRM
+    pay::apply_visit_paid(&st, &format!("deposit-{id}"), None, Some("DEPOSIT"), "{}").await?;
+    let bal2 = crate::modules::wallet::service::balance(&st.pool, cu.user_id).await?;
+    Ok(ok(json!({ "paid": true, "balance": bal2 }), StatusCode::OK))
 }
 
 pub async fn cancel(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
     cu.require("visits.book")?;
-    let v = svc::require_visit_access(&st.pool, &cu, id).await?;
-    if v.user_id != cu.user_id {
-        return Err(AppError::Forbidden("hanya pemesan yang bisa membatalkan".into()));
-    }
     let out = svc::cancel(&st, &cu, id).await?;
     Ok(ok(out, StatusCode::OK))
 }
@@ -157,7 +180,7 @@ pub async fn put_my_location(cu: CurrentUser, State(st): State<AppState>, Json(r
 // ===================== ustadz =====================
 
 fn ustadz_perm(cu: &CurrentUser) -> Result<(), AppError> {
-    cu.require("ustadz.visits.manage")
+    cu.require("visits.manage")
 }
 
 pub async fn get_visit_settings(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
@@ -171,33 +194,9 @@ pub async fn put_visit_settings(cu: CurrentUser, State(st): State<AppState>, Jso
     Ok(ok(out, StatusCode::OK))
 }
 
-pub async fn list_tarif(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
-    ustadz_perm(&cu)?;
-    Ok(ok(svc::list_tarif(&st.pool, cu.user_id).await?, StatusCode::OK))
-}
-
-pub async fn upsert_tarif(cu: CurrentUser, State(st): State<AppState>, Json(req): Json<TarifUpsertReq>) -> Result<Response, AppError> {
-    ustadz_perm(&cu)?;
-    svc::upsert_tarif(&st.pool, cu.user_id, req).await?;
-    Ok(ok(json!({ "saved": true }), StatusCode::CREATED))
-}
-
-pub async fn delete_tarif(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
-    ustadz_perm(&cu)?;
-    svc::delete_tarif(&st.pool, cu.user_id, id).await?;
-    Ok(ok(json!({ "deleted": true }), StatusCode::OK))
-}
-
 pub async fn my_visits(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
     ustadz_perm(&cu)?;
     Ok(ok(svc::my_visits(&st.pool, cu.user_id).await?, StatusCode::OK))
-}
-
-pub async fn requester_reviews(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>, Query(q): Query<ListQ>) -> Result<Response, AppError> {
-    ustadz_perm(&cu)?;
-    let limit = q.limit.unwrap_or(20).clamp(1, 50);
-    let (items, next) = svc::requester_reviews(&st.pool, cu.user_id, id, limit, q.cursor).await?;
-    Ok(paged(items, next))
 }
 
 pub async fn confirm_visit(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
@@ -207,9 +206,7 @@ pub async fn confirm_visit(cu: CurrentUser, State(st): State<AppState>, Path(id)
 }
 
 #[derive(Deserialize)]
-pub struct DeclineReq {
-    pub reason: Option<String>,
-}
+pub struct DeclineReq { pub reason: Option<String> }
 
 pub async fn decline_visit(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>, body: Option<Json<DeclineReq>>) -> Result<Response, AppError> {
     ustadz_perm(&cu)?;
@@ -224,15 +221,42 @@ pub async fn complete_visit(cu: CurrentUser, State(st): State<AppState>, Path(id
     Ok(ok(out, StatusCode::OK))
 }
 
-// ===================== webhook & dev-simulate (TANPA auth user) =====================
+// ===================== ketersediaan (ustadz) =====================
+
+pub async fn get_availability(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
+    ustadz_perm(&cu)?;
+    Ok(ok(svc::get_availability(&st.pool, cu.user_id).await?, StatusCode::OK))
+}
+
+pub async fn add_slot(cu: CurrentUser, State(st): State<AppState>, Json(req): Json<SlotUpsertReq>) -> Result<Response, AppError> {
+    ustadz_perm(&cu)?;
+    let id = svc::add_slot(&st.pool, cu.user_id, req.weekday, req.start_minute, req.end_minute).await?;
+    Ok(ok(json!({ "id": id }), StatusCode::CREATED))
+}
+
+pub async fn delete_slot(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
+    ustadz_perm(&cu)?;
+    svc::delete_slot(&st.pool, cu.user_id, id).await?;
+    Ok(ok(json!({ "deleted": true }), StatusCode::OK))
+}
+
+pub async fn add_blackout(cu: CurrentUser, State(st): State<AppState>, Json(req): Json<BlackoutReq>) -> Result<Response, AppError> {
+    ustadz_perm(&cu)?;
+    svc::add_blackout(&st.pool, cu.user_id, &req.off_date, req.note).await?;
+    Ok(ok(json!({ "added": true }), StatusCode::CREATED))
+}
+
+pub async fn delete_blackout(cu: CurrentUser, State(st): State<AppState>, Path(date): Path<String>) -> Result<Response, AppError> {
+    ustadz_perm(&cu)?;
+    svc::delete_blackout(&st.pool, cu.user_id, &date).await?;
+    Ok(ok(json!({ "deleted": true }), StatusCode::OK))
+}
+
+// ===================== webhook & simulasi (TANPA auth user) =====================
 
 pub async fn xendit_callback(State(st): State<AppState>, headers: HeaderMap, body: String) -> Result<Response, AppError> {
-    // verifikasi x-callback-token (constant-time)
     let expected = st.payments.callback_token.clone().unwrap_or_default();
-    let got = headers
-        .get("x-callback-token")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    let got = headers.get("x-callback-token").and_then(|v| v.to_str().ok()).unwrap_or("");
     if expected.is_empty() {
         return Err(AppError::Forbidden("webhook belum dikonfigurasi (XENDIT_CALLBACK_TOKEN)".into()));
     }
@@ -249,8 +273,10 @@ pub async fn xendit_callback(State(st): State<AppState>, headers: HeaderMap, bod
         return Err(AppError::Unprocessable("external_id kosong".into()));
     }
     let res = match status.as_str() {
-        "PAID" | "SETTLED" => pay::apply_paid(&st, &external_id, invoice_id.as_deref(), channel.as_deref(), &body).await?,
-        "EXPIRED" | "EXPIRING" => pay::apply_expired(&st, &external_id, invoice_id.as_deref(), &body).await?,
+        "PAID" | "SETTLED" => pay::apply_visit_paid(&st, &external_id, invoice_id.as_deref(), channel.as_deref(), &body).await?,
+        "EXPIRED" | "EXPIRING" => pay::apply_visit_expired(&st, &external_id, invoice_id.as_deref(), &body).await?,
+        "TOPUP_PAID" => pay::apply_topup_paid(&st, &external_id, channel.as_deref(), &body).await?,
+        "TOPUP_EXPIRED" => pay::apply_topup_expired(&st, &external_id).await?,
         other => format!("ignored status {other}"),
     };
     Ok(ok(json!({ "received": true, "result": res }), StatusCode::OK))
@@ -262,15 +288,15 @@ pub struct SimulateReq {
     pub event: Option<String>,
 }
 
-/// DEV ONLY (gateway mock + MQ_DEV_EXPOSE_TOKENS): simulasikan webhook Xendit.
-pub async fn dev_simulate(State(st): State<AppState>, Json(req): Json<SimulateReq>) -> Result<Response, AppError> {
+/// DEV ONLY (Xendit mock + MQ_DEV_EXPOSE_TOKENS): simulasi pembayaran tanpa Xendit.
+pub async fn xendit_simulate(State(st): State<AppState>, Json(req): Json<SimulateReq>) -> Result<Response, AppError> {
     if !st.payments.is_mock() || !st.dev_expose_tokens() {
         return Err(AppError::Forbidden("hanya utk mode dev/mock".into()));
     }
     let event = req.event.unwrap_or_else(|| "paid".into());
     let res = match event.as_str() {
-        "paid" => pay::apply_paid(&st, &req.external_id, None, Some("MOCK"), "{}").await?,
-        "expired" => pay::apply_expired(&st, &req.external_id, None, "{}").await?,
+        "paid" => pay::apply_visit_paid(&st, &req.external_id, None, Some("MOCK"), "{}").await?,
+        "expired" => pay::apply_visit_expired(&st, &req.external_id, None, "{}").await?,
         other => return Err(AppError::Unprocessable(format!("event {other} tidak dikenal"))),
     };
     Ok(ok(json!({ "simulated": event, "result": res }), StatusCode::OK))
@@ -298,7 +324,7 @@ pub async fn admin_visit_detail(cu: CurrentUser, State(st): State<AppState>, Pat
 
 pub async fn admin_force_complete(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
     admin_perm(&cu)?;
-    let out = svc::admin_force_complete(&st.pool, cu.user_id, id).await?;
+    let out = svc::admin_force_complete(&st, cu.user_id, id).await?;
     Ok(ok(out, StatusCode::OK))
 }
 
@@ -316,43 +342,41 @@ pub async fn admin_messages(cu: CurrentUser, State(st): State<AppState>, Path(id
 }
 
 #[derive(Deserialize)]
-pub struct PaymentQ {
-    pub status: Option<String>,
-    pub cursor: Option<i64>,
-}
+pub struct PayoutQ { pub status: Option<String>, pub cursor: Option<i64> }
 
-pub async fn admin_list_payments(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<PaymentQ>) -> Result<Response, AppError> {
+pub async fn admin_list_payouts(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<PayoutQ>) -> Result<Response, AppError> {
     admin_perm(&cu)?;
-    let (items, next) = pay::admin_list_payments(&st.pool, q.status.as_deref(), 20, q.cursor).await?;
+    let (items, next) = pay::admin_list_payouts(&st.pool, q.status.as_deref(), 20, q.cursor).await?;
     Ok(paged(items, next))
 }
 
-pub async fn admin_mark_refunded(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
+pub async fn admin_approve_payout(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
     admin_perm(&cu)?;
-    pay::admin_mark_refunded(&st.pool, cu.user_id, id).await?;
-    Ok(ok(json!({ "marked": true }), StatusCode::OK))
+    pay::admin_payout_approve(&st.pool, cu.user_id, id).await?;
+    Ok(ok(json!({ "approved": true }), StatusCode::OK))
 }
 
 #[derive(Deserialize)]
-pub struct ReviewQ {
-    pub direction: Option<String>,
-    pub cursor: Option<i64>,
+pub struct RejectPayoutReq { pub reason: String }
+
+pub async fn admin_reject_payout(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>, Json(req): Json<RejectPayoutReq>) -> Result<Response, AppError> {
+    admin_perm(&cu)?;
+    pay::admin_payout_reject(&st.pool, cu.user_id, id, &req.reason).await?;
+    Ok(ok(json!({ "rejected": true }), StatusCode::OK))
 }
 
-pub async fn admin_list_reviews(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<ReviewQ>) -> Result<Response, AppError> {
+pub async fn admin_mark_transferred(cu: CurrentUser, State(st): State<AppState>, Json(req): Json<MarkTransferredReq>) -> Result<Response, AppError> {
     admin_perm(&cu)?;
-    let (items, next) = svc::admin_list_reviews(&st.pool, q.direction.as_deref(), 20, q.cursor).await?;
-    Ok(paged(items, next))
+    let mut okn = 0;
+    let mut skip = 0;
+    for id in &req.payout_ids {
+        match pay::admin_payout_mark_transferred(&st.pool, cu.user_id, *id).await {
+            Ok(_) => okn += 1,
+            Err(_) => skip += 1,
+        }
+    }
+    Ok(ok(json!({ "transferred": okn, "skipped": skip }), StatusCode::OK))
 }
 
-pub async fn admin_hide_review(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
-    admin_perm(&cu)?;
-    svc::admin_set_review_hidden(&st.pool, id, true).await?;
-    Ok(ok(json!({ "hidden": true }), StatusCode::OK))
-}
-
-pub async fn admin_unhide_review(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
-    admin_perm(&cu)?;
-    svc::admin_set_review_hidden(&st.pool, id, false).await?;
-    Ok(ok(json!({ "hidden": false }), StatusCode::OK))
-}
+#[derive(Deserialize)]
+pub struct MarkTransferredReq { pub payout_ids: Vec<i64> }

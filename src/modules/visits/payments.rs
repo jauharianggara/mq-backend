@@ -1,122 +1,112 @@
-//! Payments — Xendit integration + lifecycle (Bagian V).
-//!
-//! Invariant (plan rev 5/6):
-//!  * satu visit = satu ACTIVE payment attempt (DB UNIQUE active_marker);
-//!  * webhook/worker idempotent — PAID tidak boleh reopen visit terminal
-//!    (late-PAID setelah cancel/decline/expired => reconciliation refund otomatis);
-//!  * refund gagal (API belum aktif / error) => REFUND_PENDING_MANUAL + notif admin.
+//! Payments v2 (Panggil Ustadz): Xendit invoices (kunjungan & top-up), webhook,
+//! refund ke deposit santri, penghasilan ustadz, payout & worker jobs.
 use sqlx::MySqlPool;
 
 use crate::modules::visits::service::{dberr, log_history, notify, setting_i64};
 use crate::shared::error::AppError;
 use crate::state::AppState;
 
-/// Buat payment PENDING + invoice Xendit utk visit baru. Return invoice_url (None bila
-/// invoice gagal dibuat — retry via /pay; payment PENDING tetap ada, bukan duplikat).
-pub async fn create_payment_for_visit(state: &AppState, visit_id: i64, amount: i64) -> Result<Option<String>, AppError> {
+// ===================== kunjungan: payment + invoice =====================
+
+pub async fn create_payment_pending(state: &AppState, visit_id: i64, amount: i64) -> Result<(i64, String), AppError> {
     let external_id = format!("visit-{visit_id}-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let duration = setting_i64(&state.pool, "visit_invoice_duration_sec", 7200).await;
-    let expires: chrono::NaiveDateTime = sqlx::query_scalar(
-            &format!("SELECT DATE_ADD(UTC_TIMESTAMP(), INTERVAL {duration} SECOND)")).fetch_one(&state.pool).await.map_err(dberr)?;
-    sqlx::query(
+    let expires: String = sqlx::query_scalar(
+        &format!("SELECT DATE_FORMAT(DATE_ADD(UTC_TIMESTAMP(), INTERVAL {duration} SECOND), '%Y-%m-%dT%H:%i:%sZ')"))
+        .fetch_one(&state.pool).await.map_err(dberr)?;
+    let ins = sqlx::query(
         "INSERT INTO payments (provider, external_id, amount, subject_type, subject_id, status, expires_at) \
          VALUES ('xendit', ?, ?, 'ustadz_visit', ?, 'PENDING', ?)")
-        .bind(&external_id).bind(amount).bind(visit_id).bind(expires)
+        .bind(&external_id).bind(amount).bind(visit_id).bind(&expires)
         .execute(&state.pool).await.map_err(dberr)?;
-    match issue_invoice(state, visit_id).await {
-        Ok(url) => Ok(url),
-        Err(e) => {
-            tracing::warn!("invoice belum terbit utk visit {visit_id}: {e} — retry via POST /visits/{visit_id}/pay");
-            Ok(None)
-        }
-    }
+    Ok((ins.last_insert_id() as i64, external_id))
 }
 
-/// Terbitkan/ulang invoice utk visit (single active attempt). Return invoice_url.
-/// Reuse payment PENDING yang ada; hanya buat baru bila attempt lama sudah non-active
-/// (EXPIRED/FAILED) — dan atomically (pay_active_uq menjaga race).
-pub async fn issue_invoice(state: &AppState, visit_id: i64) -> Result<Option<String>, AppError> {
-    loop {
-        // 1) reuse attempt aktif
-        let active: Option<(i64, String, Option<String>, i64)> = sqlx::query_as(
-            "SELECT id, external_id, xendit_invoice_id, amount FROM payments \
-             WHERE subject_type = 'ustadz_visit' AND subject_id = ? AND status = 'PENDING'")
-            .bind(visit_id).fetch_optional(&state.pool).await.map_err(dberr)?;
-        if let Some((_id, external_id, invoice_id, amount)) = active {
-            if invoice_id.is_some() && !state.payments.is_mock() {
-                // invoice masih valid — regenerate URL via GET (idempotent read)
-                if let Ok(inv) = state.payments.get_invoice(invoice_id.as_deref().unwrap()).await {
-                    if inv.status == "PENDING" || inv.status == "PAID" {
-                        return Ok(Some(inv.invoice_url));
+/// Coba terbitkan invoice utk payment PENDING terbaru milik visit (tanpa duplikat).
+/// Return invoice_url bila sukses.
+pub async fn try_issue_invoice(state: &AppState, payment_id: i64, external_id: &str, amount: i64) -> Option<String> {
+    let duration = setting_i64(&state.pool, "visit_invoice_duration_sec", 7200).await;
+    let inv = state.payments.create_invoice(
+        crate::infrastructure::xendit::CreateInvoice {
+            external_id,
+            amount,
+            description: &format!("Panggil Ustadz #{external_id} — MQ Mujayarotul Faqih"),
+            duration_sec: duration,
+        }).await.ok()?;
+    sqlx::query("UPDATE payments SET xendit_invoice_id = ? WHERE id = ?")
+        .bind(&inv.id).bind(payment_id)
+        .execute(&state.pool).await.ok()?;
+    Some(inv.invoice_url)
+}
+
+/// Issue/reuse invoice utk visit (dipakai POST /visits/{id}/pay). Tanpa duplikat aktif.
+pub async fn issue_invoice_for_visit(state: &AppState, visit_id: i64) -> Result<Option<String>, AppError> {
+    let p = crate::modules::visits::service::fetch_payment(&state.pool, visit_id)
+        .await?.ok_or_else(|| AppError::NotFound("payment tidak ada".into()))?;
+    match p.status.as_str() {
+        "PENDING" => {
+            if let Some(inv_id) = &p.invoice_id {
+                if !state.payments.is_mock() {
+                    if let Ok(inv) = state.payments.get_invoice(inv_id).await {
+                        if inv.status == "PAID" {
+                            apply_visit_paid(state, &p.external_id, Some(inv_id), None, "{}").await?;
+                            return Ok(Some(inv.invoice_url));
+                        }
+                        if inv.status == "PENDING" {
+                            return Ok(Some(inv.invoice_url));
+                        }
                     }
+                } else if let Some(u) = mock_url(&p.external_id) {
+                    return Ok(Some(u));
                 }
             }
-            let url = create_and_store(state, visit_id, &external_id, amount).await?;
-            return Ok(Some(url));
-        }
-        // 2) tidak ada attempt aktif — cek visit masih REQUESTED & buat baru
-        let v = crate::modules::visits::service::fetch_visit(&state.pool, visit_id)
-            .await?.ok_or_else(|| AppError::NotFound("pesanan tidak ada".into()))?;
-        if v.status != "REQUESTED" {
-            return Err(AppError::Unprocessable(format!("status {} — tidak perlu pembayaran", v.status)));
-        }
-        let external_id = format!("visit-{visit_id}-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
-        let duration = setting_i64(&state.pool, "visit_invoice_duration_sec", 7200).await;
-        let expires: String = sqlx::query_scalar("SELECT DATE_FORMAT(DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND), '%Y-%m-%dT%H:%i:%sZ')")
-            .bind(duration).fetch_one(&state.pool).await.map_err(dberr)?;
-        let ins = sqlx::query(
-            "INSERT INTO payments (provider, external_id, amount, subject_type, subject_id, status, expires_at) \
-             VALUES ('xendit', ?, ?, 'ustadz_visit', ?, 'PENDING', ?)")
-            .bind(&external_id).bind(v.price).bind(visit_id).bind(expires)
-            .execute(&state.pool).await;
-        match ins {
-            Ok(_) => continue, // loop -> masuk cabang reuse
-            Err(e) => {
-                let m = format!("{e}");
-                if m.contains("pay_active_uq") {
-                    continue; // race: attempt lain dibuat bersamaan — reuse
+            let url = state.payments.create_invoice(
+                crate::infrastructure::xendit::CreateInvoice {
+                    external_id: &p.external_id,
+                    amount: p.amount,
+                    description: &format!("Panggil Ustadz #{visit_id} - MQ Mujayarotul Faqih"),
+                    duration_sec: setting_i64(&state.pool, "visit_invoice_duration_sec", 7200).await,
+                }).await;
+            match url {
+                Ok(inv) => {
+                    sqlx::query("UPDATE payments SET xendit_invoice_id = ? WHERE id = ?")
+                        .bind(&inv.id).bind(p.id)
+                        .execute(&state.pool).await.map_err(dberr)?;
+                    Ok(Some(inv.invoice_url))
                 }
-                return Err(dberr(e));
+                Err(e) => {
+                    tracing::warn!("invoice gagal utk visit {visit_id}: {e}");
+                    Ok(None)
+                }
             }
         }
+        other => Err(AppError::Conflict(format!("payment berstatus {other}"))),
     }
 }
 
-async fn create_and_store(state: &AppState, visit_id: i64, external_id: &str, amount: i64) -> Result<String, AppError> {
-    let inv = state.payments.create_invoice(crate::infrastructure::xendit::CreateInvoice {
-        external_id,
-        amount,
-        description: &format!("Pesan Ustadz #{visit_id} — MQ Mujayarotul Faqih"),
-        duration_sec: setting_i64(&state.pool, "visit_invoice_duration_sec", 7200).await,
-        success_url: std::env::var("MQ_VISIT_SUCCESS_URL").ok().map(|s| leak(&s)).as_deref(),
-        failure_url: std::env::var("MQ_VISIT_FAILURE_URL").ok().map(|s| leak(&s)).as_deref(),
-        payer_email: None,
-    }).await.map_err(|e| AppError::Internal(format!("payment provider: {e}")))?;
-    sqlx::query("UPDATE payments SET xendit_invoice_id = ? WHERE external_id = ?")
-        .bind(&inv.id).bind(external_id)
-        .execute(&state.pool).await.map_err(dberr)?;
-    Ok(inv.invoice_url)
+fn mock_url(external_id: &str) -> Option<String> {
+    Some(format!("mock://invoice/{external_id}"))
 }
-fn leak(s: &String) -> String { s.clone() }
 
-/// Terapkan PAID (dipakai webhook, worker poll, dan dev-simulate). Idempotent + no-reopen.
-pub async fn apply_paid(state: &AppState, external_id: &str, invoice_id: Option<&str>, channel: Option<&str>, raw: &str) -> Result<String, AppError> {
-    // payment transition PENDING -> PAID (rows_affected jadi penanda idempotent)
+// ===================== webhook & simulasi =====================
+
+pub async fn apply_visit_paid(state: &AppState, external_id: &str, invoice_id: Option<&str>, channel: Option<&str>, raw: &str) -> Result<String, AppError> {
     let n = sqlx::query(
         "UPDATE payments SET status = 'PAID', paid_at = UTC_TIMESTAMP(), channel = COALESCE(?, channel), \
          raw_callback = CAST(? AS JSON) \
          WHERE (external_id = ? OR (? IS NOT NULL AND xendit_invoice_id = ?)) AND status = 'PENDING'")
         .bind(channel).bind(raw).bind(external_id).bind(invoice_id).bind(invoice_id)
         .execute(&state.pool).await.map_err(dberr)?.rows_affected();
-    let pid_row: Option<(i64, i64, String)> = sqlx::query_as(
-        "SELECT id, subject_id, status FROM payments WHERE external_id = ? OR (? IS NOT NULL AND xendit_invoice_id = ?) ORDER BY id DESC LIMIT 1")
+    let row: Option<(i64, i64, String)> = sqlx::query_as(
+        "SELECT id, subject_id, status FROM payments \\
+         WHERE external_id = ? OR (? IS NOT NULL AND xendit_invoice_id = ?) ORDER BY id DESC LIMIT 1")
         .bind(external_id).bind(invoice_id).bind(invoice_id)
         .fetch_optional(&state.pool).await.map_err(dberr)?;
-    let (payment_id, visit_id, pay_status) = pid_row.ok_or_else(|| AppError::NotFound("payment tidak dikenal".into()))?;
+    let (payment_id, visit_id, pay_status) = row.ok_or_else(|| AppError::NotFound("payment tidak dikenal".into()))?;
+    let _ = payment_id;
     if n == 0 && pay_status != "PAID" {
-        return Err(AppError::Conflict(format!("payment status {pay_status} — tidak bisa PAID")));
+        return Err(AppError::Conflict(format!("payment berstatus {pay_status}")));
     }
-    // visit transition (hanya REQUESTED -> WAITING_CONFIRM; terminal => reconciliation refund)
     let v = crate::modules::visits::service::fetch_visit(&state.pool, visit_id)
         .await?.ok_or_else(|| AppError::Internal("visit hilang".into()))?;
     if v.status == "REQUESTED" {
@@ -124,32 +114,32 @@ pub async fn apply_paid(state: &AppState, external_id: &str, invoice_id: Option<
         let n2 = sqlx::query("UPDATE ustadz_visits SET status = 'WAITING_CONFIRM', paid_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'REQUESTED'")
             .bind(visit_id).execute(&mut *tx).await.map_err(dberr)?.rows_affected();
         if n2 > 0 {
-            log_history(&mut *tx, visit_id, Some("REQUESTED"), "WAITING_CONFIRM", None, "payment PAID").await?;
-            let timeout_h = setting_i64(&state.pool, "visit_confirm_timeout_hours", 3).await;
+            log_history(&mut *tx, visit_id, Some("REQUESTED"), "WAITING_CONFIRM", None, "pembayaran diterima").await?;
             notify(&mut *tx, v.ustadz_id, "VISIT_PAID_WAITING", "Permintaan kunjungan baru",
-                &format!("Santri memesan {} utk {}. Konfirmasi/tolak dalam {timeout_h} jam.", v.service_name, v.scheduled_at), &visit_id.to_string()).await?;
+                &format!("Santri memesan {} untuk {}. Buka menu Kunjungan utk menerima/menolak (batas 3 jam).",
+                    "Kunjungan", v.scheduled_at), &visit_id.to_string()).await?;
         }
         tx.commit().await.map_err(dberr)?;
         return Ok("paid".into());
     }
-    // PAID datang terlambat di visit terminal/lanjut => jangan reopen; refund otomatis
     if matches!(v.status.as_str(), "CANCELED" | "DECLINED" | "PAYMENT_EXPIRED") {
-        attempt_refund(state, visit_id, "late-PAID reconciliation").await?;
-        return Ok("paid->refunded(late)".into());
+        // late-PAID: dana kembali ke saldo santri (tanpa Xendit refund API)
+        crate::modules::wallet::service::credit(&state.pool, v.user_id, v.price_total, "REFUND", "ustadz_visit", visit_id).await?;
+        sqlx::query("UPDATE payments SET status = 'REFUNDED', refunded_amount = ? WHERE external_id = ?")
+            .bind(v.price_total).bind(external_id)
+            .execute(&state.pool).await.map_err(dberr)?;
+        return Ok("paid->refund-deposit".into());
     }
     Ok("paid(no-op)".into())
 }
 
-/// Terapkan EXPIRED dari Xendit (webhook/poll). Idempotent.
-pub async fn apply_expired(state: &AppState, external_id: &str, invoice_id: Option<&str>, raw: &str) -> Result<String, AppError> {
+pub async fn apply_visit_expired(state: &AppState, external_id: &str, invoice_id: Option<&str>, raw: &str) -> Result<String, AppError> {
     let n = sqlx::query(
         "UPDATE payments SET status = 'EXPIRED', raw_callback = CAST(? AS JSON) \
          WHERE (external_id = ? OR (? IS NOT NULL AND xendit_invoice_id = ?)) AND status = 'PENDING'")
         .bind(raw).bind(external_id).bind(invoice_id).bind(invoice_id)
         .execute(&state.pool).await.map_err(dberr)?.rows_affected();
-    if n == 0 {
-        return Ok("expired(no-op)".into());
-    }
+    if n == 0 { return Ok("expired(no-op)".into()); }
     let row: Option<(i64,)> = sqlx::query_as(
         "SELECT subject_id FROM payments WHERE external_id = ? OR (? IS NOT NULL AND xendit_invoice_id = ?) ORDER BY id DESC LIMIT 1")
         .bind(external_id).bind(invoice_id).bind(invoice_id)
@@ -159,91 +149,55 @@ pub async fn apply_expired(state: &AppState, external_id: &str, invoice_id: Opti
         let n2 = sqlx::query("UPDATE ustadz_visits SET status = 'PAYMENT_EXPIRED' WHERE id = ? AND status = 'REQUESTED'")
             .bind(visit_id).execute(&mut *tx).await.map_err(dberr)?.rows_affected();
         if n2 > 0 {
-            log_history(&mut *tx, visit_id, Some("REQUESTED"), "PAYMENT_EXPIRED", None, "invoice kedaluwarsa").await?;
+            crate::modules::visits::service::log_history(&mut *tx, visit_id, Some("REQUESTED"), "PAYMENT_EXPIRED", None, "invoice kedaluwarsa").await?;
         }
         tx.commit().await.map_err(dberr)?;
     }
     Ok("expired".into())
 }
 
-/// Refund attempt utk visit (semua payment PAID milik visit). Sukses => REFUNDED;
-/// gagal => REFUND_PENDING_MANUAL + notif admin (jalur manual — plan V).
-pub async fn attempt_refund(state: &AppState, visit_id: i64, reason: &str) -> Result<(), AppError> {
-    let rows: Vec<(i64, String, Option<String>, i64, i64)> = sqlx::query_as(
-        "SELECT id, external_id, xendit_invoice_id, amount, refunded_amount FROM payments \
-         WHERE subject_type = 'ustadz_visit' AND subject_id = ? AND status IN ('PAID','REFUND_REQUESTED')")
+// ===================== refund & penghasilan (wallet) =====================
+
+/// Semua dana kunjungan yang sudah dibayar dikembalikan ke DEPOSIT santri.
+pub async fn refund_visit_to_deposit(state: &AppState, visit_id: i64, reason: &str) -> Result<(), AppError> {
+    let rows: Vec<(i64, String, i64, i64)> = sqlx::query_as(
+        "SELECT id, external_id, amount, refunded_amount FROM payments \
+         WHERE subject_type = 'ustadz_visit' AND subject_id = ? AND status = 'PAID'")
         .bind(visit_id).fetch_all(&state.pool).await.map_err(dberr)?;
-    for (pid, external_id, invoice_id, amount, refunded) in rows {
+    for (pid, external_id, amount, refunded) in rows {
         let sisa = amount - refunded;
-        if sisa <= 0 {
-            continue;
-        }
-        let inv_ref = invoice_id.clone().unwrap_or_else(|| external_id.clone());
-        match state.payments.create_refund(&inv_ref, sisa, reason).await {
-            Ok(rf) => {
-                sqlx::query("UPDATE payments SET status = 'REFUNDED', refund_id = ?, refunded_amount = refunded_amount + ? WHERE id = ?")
-                    .bind(&rf.id).bind(sisa).bind(pid)
-                    .execute(&state.pool).await.map_err(dberr)?;
-                tracing::info!("refund OK payment {pid} visit {visit_id}: {sisa}");
-            }
-            Err(e) => {
-                sqlx::query("UPDATE payments SET status = 'REFUND_PENDING_MANUAL' WHERE id = ? AND status IN ('PAID','REFUND_REQUESTED')")
-                    .bind(pid)
-                    .execute(&state.pool).await.map_err(dberr)?;
-                tracing::error!("refund GAGAL payment {pid} visit {visit_id}: {e}");
-                crate::modules::visits::service::notify_admins(&state.pool, "VISIT_REFUND_PENDING_MANUAL",
-                    "Refund manual diperlukan",
-                    &format!("Payment {external_id} (visit {visit_id}) gagal refund otomatis: {reason}. Proses manual dari dashboard Xendit lalu tandai dikembalikan."),
-                    &visit_id.to_string()).await;
-            }
-        }
+        if sisa <= 0 { continue; }
+        let owner: (i64,) = sqlx::query_as("SELECT user_id FROM ustadz_visits WHERE id = ?")
+            .bind(visit_id).fetch_one(&state.pool).await.map_err(dberr)?;
+        crate::modules::wallet::service::credit(&state.pool, owner.0, sisa, "REFUND", "ustadz_visit", visit_id).await?;
+        sqlx::query("UPDATE payments SET status = 'REFUNDED', refunded_amount = ? WHERE id = ?")
+            .bind(sisa).bind(pid)
+            .execute(&state.pool).await.map_err(dberr)?;
+        tracing::info!("refund {sisa} ke saldo santri (visit {visit_id}) — {reason} [{external_id}]");
     }
     Ok(())
 }
 
-// ===================== admin payments =====================
-
-pub async fn admin_list_payments(pool: &MySqlPool, status: Option<&str>, limit: i64, cursor: Option<i64>) -> Result<(Vec<serde_json::Value>, Option<String>), AppError> {
-    let rows: Vec<(i64, String, Option<String>, i64, String, Option<String>, i64, i64, String)> = sqlx::query_as(
-        "SELECT id, external_id, xendit_invoice_id, amount, status, channel, refunded_amount, subject_id, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') \
-         FROM payments WHERE (? IS NULL OR status = ?) AND (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?")
-        .bind(status).bind(status).bind(cursor).bind(cursor).bind(limit + 1)
-        .fetch_all(pool).await.map_err(dberr)?;
-    let mut out = Vec::new();
-    let mut next = None;
-    for (i, r) in rows.into_iter().enumerate() {
-        if (i as i64) == limit {
-            next = Some(r.0.to_string());
-            break;
-        }
-        out.push(serde_json::json!({
-            "id": r.0, "external_id": r.1, "xendit_invoice_id": r.2, "amount": r.3,
-            "status": r.4, "channel": r.5, "refunded_amount": r.6, "visit_id": r.7, "created_at": r.8,
-        }));
+/// Penghasilan ustadz masuk saldo saat kunjungan COMPLETED.
+pub async fn earn_visit_income(state: &AppState, visit_id: i64, ustadz_id: i64) -> Result<(), AppError> {
+    let rows: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT id, amount FROM payments \
+         WHERE subject_type = 'ustadz_visit' AND subject_id = ? AND status = 'PAID'")
+        .bind(visit_id).fetch_all(&state.pool).await.map_err(dberr)?;
+    for (pid, amount) in rows {
+        let sudah: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM wallet_transactions \
+             WHERE user_id = ? AND tx_type = 'EARNING' AND subject_type = 'ustadz_visit' AND subject_id = ?")
+            .bind(ustadz_id).bind(visit_id).fetch_one(&state.pool).await.map_err(dberr)?;
+        if sudah > 0 { continue; }
+        crate::modules::wallet::service::credit(&state.pool, ustadz_id, amount, "EARNING", "ustadz_visit", visit_id).await?;
     }
-    Ok((out, next))
-}
-
-pub async fn admin_mark_refunded(pool: &MySqlPool, admin_id: i64, payment_id: i64) -> Result<(), AppError> {
-    let row: Option<(i64, i64, i64)> = sqlx::query_as(
-        "SELECT amount, subject_id, refunded_amount FROM payments WHERE id = ? AND subject_type = 'ustadz_visit'")
-        .bind(payment_id).fetch_optional(pool).await.map_err(dberr)?;
-    let (amount, visit_id, refunded) = row.ok_or_else(|| AppError::NotFound("payment tidak ada".into()))?;
-    let n = sqlx::query(
-        "UPDATE payments SET status = 'REFUNDED', refunded_amount = ?, refund_id = COALESCE(refund_id, 'manual') WHERE id = ? AND status IN ('REFUND_PENDING_MANUAL','PAID')")
-        .bind(amount).bind(payment_id)
-        .execute(pool).await.map_err(dberr)?.rows_affected();
-    if n == 0 {
-        return Err(AppError::Conflict("payment tidak dalam status refundable".into()));
-    }
-    let _ = refunded;
-    log_history(pool, visit_id, None, &format!("PAYMENT-{payment_id}-REFUNDED"), Some(admin_id), "admin tandai dikembalikan (manual)").await?;
     Ok(())
 }
 
-// ===================== worker jobs (Bagian V) =====================
+// ===================== worker jobs =====================
 
-pub async fn job_confirm_timeout(state: &AppState) -> Result<usize, AppError> {
+pub async fn job_confirm_timeout(state: &AppState) -> Result<u64, AppError> {
     let timeout_h = setting_i64(&state.pool, "visit_confirm_timeout_hours", 3).await;
     let rows: Vec<(i64, i64, i64)> = sqlx::query_as(
         "SELECT id, user_id, ustadz_id FROM ustadz_visits \
@@ -251,17 +205,14 @@ pub async fn job_confirm_timeout(state: &AppState) -> Result<usize, AppError> {
         .bind(timeout_h)
         .fetch_all(&state.pool).await.map_err(dberr)?;
     let mut n = 0;
-    for (visit_id, santri_id, ustadz_id) in rows {
+    for (visit_id, _santri, _ustadz) in rows {
         let mut tx = state.pool.begin().await.map_err(dberr)?;
         let n2 = sqlx::query("UPDATE ustadz_visits SET status = 'DECLINED', declined_at = UTC_TIMESTAMP(), decline_reason = 'tidak dikonfirmasi dalam batas waktu' WHERE id = ? AND status = 'WAITING_CONFIRM'")
             .bind(visit_id).execute(&mut *tx).await.map_err(dberr)?.rows_affected();
         if n2 > 0 {
-            log_history(&mut *tx, visit_id, Some("WAITING_CONFIRM"), "DECLINED", None, "auto-timeout konfirmasi — refund penuh").await?;
-            notify(&mut *tx, santri_id, "VISIT_DECLINED_REFUNDED", "Konfirmasi kedaluwarsa",
-                "Ustadz tidak merespons dalam batas waktu. Dana PENUH dikembalikan.", &visit_id.to_string()).await?;
-            let _ = ustadz_id;
+            crate::modules::visits::service::log_history(&mut *tx, visit_id, Some("WAITING_CONFIRM"), "DECLINED", None, "auto-timeout konfirmasi").await?;
             tx.commit().await.map_err(dberr)?;
-            attempt_refund(state, visit_id, "confirm-timeout").await?;
+            refund_visit_to_deposit(state, visit_id, "confirm-timeout").await?;
             n += 1;
         } else {
             tx.rollback().await.map_err(dberr)?;
@@ -270,10 +221,8 @@ pub async fn job_confirm_timeout(state: &AppState) -> Result<usize, AppError> {
     Ok(n)
 }
 
-pub async fn job_payment_poll(state: &AppState) -> Result<usize, AppError> {
-    if state.payments.is_mock() {
-        return Ok(0); // mock: tidak ada sumber eksternal utk dipoll
-    }
+pub async fn job_payment_poll(state: &AppState) -> Result<u64, AppError> {
+    if state.payments.is_mock() { return Ok(0); }
     let rows: Vec<(String, Option<String>)> = sqlx::query_as(
         "SELECT external_id, xendit_invoice_id FROM payments \
          WHERE status = 'PENDING' AND created_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 45 MINUTE) LIMIT 50")
@@ -282,60 +231,47 @@ pub async fn job_payment_poll(state: &AppState) -> Result<usize, AppError> {
     for (external_id, invoice_id) in rows {
         let inv = match state.payments.get_invoice(invoice_id.as_deref().unwrap_or(&external_id)).await {
             Ok(i) => i,
-            Err(e) => {
-                tracing::warn!("poll {external_id}: {e}");
-                continue;
-            }
+            Err(e) => { tracing::warn!("poll {external_id}: {e}"); continue; }
         };
         match inv.status.as_str() {
-            "PAID" | "SETTLED" => {
-                apply_paid(state, &external_id, Some(&inv.id), None, "{}").await?;
-                n += 1;
-            }
-            "EXPIRED" | "EXPIRING" => {
-                apply_expired(state, &external_id, Some(&inv.id), "{}").await?;
-                n += 1;
-            }
+            "PAID" | "SETTLED" => { apply_visit_paid(state, &external_id, Some(&inv.id), None, "{}").await?; n += 1; }
+            "EXPIRED" | "EXPIRING" => { apply_visit_expired(state, &external_id, Some(&inv.id), "{}").await?; n += 1; }
             _ => {}
         }
     }
     Ok(n)
 }
 
-pub async fn job_reminder(state: &AppState) -> Result<usize, AppError> {
-    let rows: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-        "SELECT v.id, v.user_id, v.ustadz_id, vst.name FROM ustadz_visits v \
-         JOIN visit_service_types vst ON vst.id = v.service_type_id \
-         WHERE v.status = 'CONFIRMED' \
-           AND v.scheduled_at BETWEEN UTC_TIMESTAMP() AND DATE_ADD(UTC_TIMESTAMP(), INTERVAL 2 HOUR) LIMIT 100")
+pub async fn job_reminder(state: &AppState) -> Result<u64, AppError> {
+    let rows: Vec<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT id, user_id, ustadz_id FROM ustadz_visits \
+         WHERE status = 'CONFIRMED' \
+           AND scheduled_at BETWEEN UTC_TIMESTAMP() AND DATE_ADD(UTC_TIMESTAMP(), INTERVAL 2 HOUR) LIMIT 100")
         .fetch_all(&state.pool).await.map_err(dberr)?;
     let mut n = 0;
-    for (visit_id, santri_id, ustadz_id, service) in rows {
-        // dedupe: skip bila notif reminder sudah pernah terkirim utk visit ini
+    for (visit_id, santri, ustadz) in rows {
         let sent: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM user_notifications WHERE template_code = 'VISIT_REMINDER' AND data LIKE ?")
             .bind(format!("%visit:{visit_id}%"))
             .fetch_one(&state.pool).await.map_err(dberr)?;
-        if sent > 0 {
-            continue;
-        }
-        let sched: String = sqlx::query_scalar("SELECT DATE_FORMAT(scheduled_at, '%Y-%m-%dT%H:%i:%sZ') FROM ustadz_visits WHERE id = ?")
+        if sent > 0 { continue; }
+        let sched: String = sqlx::query_scalar(
+            "SELECT DATE_FORMAT(scheduled_at, '%Y-%m-%dT%H:%i:%sZ') FROM ustadz_visits WHERE id = ?")
             .bind(visit_id).fetch_one(&state.pool).await.map_err(dberr)?;
-        let mins: i64 = sqlx::query_scalar("SELECT GREATEST(0, TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), ?))")
-            .bind(sched).fetch_one(&state.pool).await.map_err(dberr)?;
-        notify(&state.pool, santri_id, "VISIT_REMINDER", "Pengingat kunjungan",
-            &format!("Kunjungan {service} kurang {mins} menit lagi. Siapkan tempat & Al-Qur'an."), &visit_id.to_string()).await?;
-        notify(&state.pool, ustadz_id, "VISIT_REMINDER", "Pengingat kunjungan",
-            &format!("Kunjungan {service} kurang {mins} menit lagi."), &visit_id.to_string()).await?;
+        notify(&state.pool, santri, "VISIT_REMINDER", "Pengingat kunjungan",
+            &format!("Kunjungan kurang 2 jam lagi ({sched}). Siapkan tempat & Al-Qur'an."), &visit_id.to_string()).await?;
+        notify(&state.pool, ustadz, "VISIT_REMINDER", "Pengingat kunjungan",
+            &format!("Kunjungan kurang 2 jam lagi ({sched})."), &visit_id.to_string()).await?;
         n += 1;
     }
     Ok(n)
 }
 
-pub async fn job_review_window(state: &AppState) -> Result<usize, AppError> {
+pub async fn job_review_window(state: &AppState) -> Result<u64, AppError> {
     let days = setting_i64(&state.pool, "visit_review_window_days", 7).await;
     let rows: Vec<(i64,)> = sqlx::query_as(
-        &format!("SELECT id FROM ustadz_visits WHERE status = 'COMPLETED' AND completed_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {days} DAY) LIMIT 100"))
+        "SELECT id FROM ustadz_visits WHERE status = 'COMPLETED' AND completed_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY) LIMIT 100")
+        .bind(days)
         .fetch_all(&state.pool).await.map_err(dberr)?;
     let mut n = 0;
     for (visit_id,) in rows {
@@ -345,10 +281,188 @@ pub async fn job_review_window(state: &AppState) -> Result<usize, AppError> {
         let n2 = sqlx::query("UPDATE ustadz_visits SET status = 'REVIEWED', reviewed_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'COMPLETED'")
             .bind(visit_id).execute(&mut *tx).await.map_err(dberr)?.rows_affected();
         if n2 > 0 {
-            log_history(&mut *tx, visit_id, Some("COMPLETED"), "REVIEWED", None, "window review lewat — reveal otomatis").await?;
+            crate::modules::visits::service::log_history(&mut *tx, visit_id, Some("COMPLETED"), "REVIEWED", None, "window review lewat").await?;
         }
         tx.commit().await.map_err(dberr)?;
         n += 1;
     }
     Ok(n)
+}
+
+// ===================== payout ustadz =====================
+
+pub async fn create_payout(state: &AppState, ustadz_id: i64, bank: &str, no: &str, an: &str, amount: i64) -> Result<i64, AppError> {
+    let fee = setting_i64(&state.pool, "payout_fee_amount", 6500).await;
+    let min = setting_i64(&state.pool, "payout_min_amount", 50000).await;
+    if amount < min {
+        return Err(AppError::Unprocessable(format!("minimum penarikan Rp {min}")));
+    }
+    // diterima = amount - fee; saldo didebit sebesar amount
+    crate::modules::wallet::service::debit(&state.pool, ustadz_id, amount, "PAYOUT", "payout_request", 0).await?;
+    let ins = sqlx::query(
+        "INSERT INTO payout_requests (ustadz_id, amount, fee, bank_name, bank_account_no, bank_account_name) \
+         VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(ustadz_id).bind(amount - fee).bind(fee).bind(bank).bind(no).bind(an)
+        .execute(&state.pool).await.map_err(dberr)?;
+    Ok(ins.last_insert_id() as i64)
+}
+
+pub async fn ustadz_payouts(pool: &MySqlPool, ustadz_id: i64) -> Result<Vec<crate::modules::visits::dto::PayoutOut>, AppError> {
+    let rows: Vec<(i64, i64, i64, String, String, String, String, Option<String>, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, amount, fee, bank_name, bank_account_no, bank_account_name, status, rejected_reason, \
+         DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(processed_at, '%Y-%m-%dT%H:%i:%sZ') \
+         FROM payout_requests WHERE ustadz_id = ? ORDER BY id DESC LIMIT 100")
+        .bind(ustadz_id).fetch_all(pool).await.map_err(dberr)?;
+    Ok(rows.into_iter().map(|r| crate::modules::visits::dto::PayoutOut {
+        id: r.0, amount: r.1, fee: r.2, bank_name: r.3, bank_account_no: r.4,
+        bank_account_name: r.5, status: r.6, rejected_reason: r.7, created_at: r.8, processed_at: r.9,
+    }).collect())
+}
+
+pub async fn admin_list_payouts(pool: &MySqlPool, status: Option<&str>, limit: i64, cursor: Option<i64>) -> Result<(Vec<serde_json::Value>, Option<String>), AppError> {
+    let rows: Vec<(i64, i64, i64, i64, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT pr.id, pr.ustadz_id, pr.amount, pr.fee, pr.bank_name, pr.bank_account_no, pr.bank_account_name, pr.status, \
+         DATE_FORMAT(pr.created_at, '%Y-%m-%dT%H:%i:%sZ') \
+         FROM payout_requests pr WHERE (? IS NULL OR pr.status = ?) AND (? IS NULL OR pr.id < ?) ORDER BY pr.id DESC LIMIT ?")
+        .bind(status).bind(status).bind(cursor).bind(cursor).bind(limit + 1)
+        .fetch_all(pool).await.map_err(dberr)?;
+    let mut out = Vec::new();
+    let mut next = None;
+    for (i, r) in rows.into_iter().enumerate() {
+        if (i as i64) == limit { next = Some(r.0.to_string()); break; }
+        out.push(serde_json::json!({
+            "id": r.0, "ustadz_id": r.1, "amount": r.2, "fee": r.3, "bank_name": r.4,
+            "account_no": r.5, "account_name": r.6, "status": r.7, "created_at": r.8,
+        }));
+    }
+    Ok((out, next))
+}
+
+pub async fn admin_approve(pool: &MySqlPool, admin_id: i64, payout_id: i64) -> Result<(), AppError> {
+    let n = sqlx::query(
+        "UPDATE payout_requests SET status = 'APPROVED', processed_by = ?, processed_at = UTC_TIMESTAMP() \
+         WHERE id = ? AND status = 'PENDING'")
+        .bind(admin_id).bind(payout_id)
+        .execute(pool).await.map_err(dberr)?.rows_affected();
+    if n == 0 { return Err(AppError::Conflict("permintaan tidak dalam status PENDING".into())); }
+    Ok(())
+}
+
+pub async fn admin_reject(pool: &MySqlPool, admin_id: i64, payout_id: i64, reason: &str) -> Result<(), AppError> {
+    let row: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT ustadz_id, amount FROM payout_requests WHERE id = ? AND status IN ('PENDING','APPROVED')")
+        .bind(payout_id).fetch_optional(pool).await.map_err(dberr)?;
+    let (ustadz_id, amount) = row.ok_or_else(|| AppError::Conflict("permintaan tidak bisa ditolak".into()))?;
+    let mut tx = pool.begin().await.map_err(dberr)?;
+    sqlx::query("UPDATE payout_requests SET status = 'REJECTED', rejected_reason = ?, processed_by = ?, processed_at = UTC_TIMESTAMP() WHERE id = ?")
+        .bind(reason.trim()).bind(admin_id).bind(payout_id)
+        .execute(&mut *tx).await.map_err(dberr)?;
+    // dana kembali ke saldo ustadz
+    sqlx::query("UPDATE wallets SET balance = balance + ? WHERE user_id = ?")
+        .bind(amount).bind(ustadz_id)
+        .execute(&mut *tx).await.map_err(dberr)?;
+    sqlx::query(
+        "INSERT INTO wallet_transactions (user_id, tx_type, amount, balance_after, subject_type, subject_id) \
+         SELECT ?, 'REFUND', ?, balance, 'payout_request', ? FROM wallets WHERE user_id = ?")
+        .bind(ustadz_id).bind(amount).bind(payout_id).bind(ustadz_id)
+        .execute(&mut *tx).await.map_err(dberr)?;
+    tx.commit().await.map_err(dberr)?;
+    Ok(())
+}
+
+pub async fn admin_mark_transferred(pool: &MySqlPool, admin_id: i64, payout_id: i64) -> Result<(), AppError> {
+    let n = sqlx::query(
+        "UPDATE payout_requests SET status = 'TRANSFERRED', processed_by = ?, processed_at = UTC_TIMESTAMP() \
+         WHERE id = ? AND status = 'APPROVED'")
+        .bind(admin_id).bind(payout_id)
+        .execute(pool).await.map_err(dberr)?.rows_affected();
+    if n == 0 {
+        return Err(AppError::Conflict("permintaan tidak dalam status APPROVED".into()));
+    }
+    Ok(())
+}
+
+
+// ===================== payout admin helpers =====================
+
+pub async fn admin_payout_approve(pool: &MySqlPool, admin_id: i64, payout_id: i64) -> Result<(), AppError> {
+    let n = sqlx::query(
+        "UPDATE payout_requests SET status = 'APPROVED', processed_by = ?, processed_at = UTC_TIMESTAMP()          WHERE id = ? AND status = 'PENDING'")
+        .bind(admin_id).bind(payout_id)
+        .execute(pool).await.map_err(dberr)?.rows_affected();
+    if n == 0 { return Err(AppError::Conflict("permintaan tidak dalam status PENDING".into())); }
+    Ok(())
+}
+
+pub async fn admin_payout_reject(pool: &MySqlPool, admin_id: i64, payout_id: i64, reason: &str) -> Result<(), AppError> {
+    let row: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT ustadz_id, amount FROM payout_requests WHERE id = ? AND status IN ('PENDING','APPROVED')")
+        .bind(payout_id).fetch_optional(pool).await.map_err(dberr)?;
+    let (ustadz_id, amount) = row.ok_or_else(|| AppError::Conflict("permintaan tidak bisa ditolak".into()))?;
+    let mut tx = pool.begin().await.map_err(dberr)?;
+    sqlx::query("UPDATE payout_requests SET status = 'REJECTED', rejected_reason = ?, processed_by = ?, processed_at = UTC_TIMESTAMP() WHERE id = ?")
+        .bind(reason.trim()).bind(admin_id).bind(payout_id)
+        .execute(&mut *tx).await.map_err(dberr)?;
+    sqlx::query("UPDATE wallets SET balance = balance + ? WHERE user_id = ?")
+        .bind(amount).bind(ustadz_id)
+        .execute(&mut *tx).await.map_err(dberr)?;
+    sqlx::query(
+        "INSERT INTO wallet_transactions (user_id, tx_type, amount, balance_after, subject_type, subject_id)          SELECT ?, 'REFUND', ?, balance, 'payout_request', ? FROM wallets WHERE user_id = ?")
+        .bind(ustadz_id).bind(amount).bind(payout_id).bind(ustadz_id)
+        .execute(&mut *tx).await.map_err(dberr)?;
+    tx.commit().await.map_err(dberr)?;
+    Ok(())
+}
+
+pub async fn admin_payout_mark_transferred(pool: &MySqlPool, admin_id: i64, payout_id: i64) -> Result<(), AppError> {
+    let n = sqlx::query(
+        "UPDATE payout_requests SET status = 'TRANSFERRED', processed_by = ?, processed_at = UTC_TIMESTAMP()          WHERE id = ? AND status = 'APPROVED'")
+        .bind(admin_id).bind(payout_id)
+        .execute(pool).await.map_err(dberr)?.rows_affected();
+    if n == 0 {
+        return Err(AppError::Conflict("permintaan tidak dalam status APPROVED".into()));
+    }
+    Ok(())
+}
+
+// ===================== topup deposit =====================
+
+pub async fn create_topup_invoice(state: &AppState, user_id: i64, amount: i64) -> Result<(i64, Option<String>), AppError> {
+    let external_id = format!("topup-{user_id}-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    sqlx::query(
+        "INSERT INTO payments (provider, external_id, amount, subject_type, subject_id, status)          VALUES ('xendit', ?, ?, 'wallet_topup', ?, 'PENDING')")
+        .bind(&external_id).bind(amount).bind(user_id)
+        .execute(&state.pool).await.map_err(dberr)?;
+    let inv = state.payments.create_invoice(crate::infrastructure::xendit::CreateInvoice {
+        external_id: &external_id,
+        amount,
+        description: "Top-up deposit santri - MQ Mujayarotul Faqih",
+        duration_sec: 86400,
+    }).await.map_err(|e| AppError::Internal(format!("payment provider: {e}")))?;
+    sqlx::query("UPDATE payments SET xendit_invoice_id = ? WHERE external_id = ?")
+        .bind(&inv.id).bind(&external_id)
+        .execute(&state.pool).await.map_err(dberr)?;
+    Ok((0, Some(inv.invoice_url)))
+}
+
+pub async fn apply_topup_paid(state: &AppState, external_id: &str, channel: Option<&str>, raw: &str) -> Result<String, AppError> {
+    let n = sqlx::query(
+        "UPDATE payments SET status = 'PAID', paid_at = UTC_TIMESTAMP(), channel = COALESCE(?, channel),          raw_callback = CAST(? AS JSON)          WHERE external_id = ? AND status = 'PENDING' AND subject_type = 'wallet_topup'")
+        .bind(channel).bind(raw).bind(external_id)
+        .execute(&state.pool).await.map_err(dberr)?.rows_affected();
+    if n == 0 { return Ok("topup(no-op)".into()); }
+    let row: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT amount, subject_id FROM payments WHERE external_id = ?")
+        .bind(external_id).fetch_optional(&state.pool).await.map_err(dberr)?;
+    let (amount, user_id) = row.ok_or_else(|| AppError::NotFound("topup tidak dikenal".into()))?;
+    crate::modules::wallet::service::credit(&state.pool, user_id, amount, "TOPUP", "xendit_topup", 0).await?;
+    Ok("topup-paid".into())
+}
+
+pub async fn apply_topup_expired(state: &AppState, external_id: &str) -> Result<String, AppError> {
+    let n = sqlx::query(
+        "UPDATE payments SET status = 'EXPIRED' WHERE external_id = ? AND status = 'PENDING' AND subject_type = 'wallet_topup'")
+        .bind(external_id)
+        .execute(&state.pool).await.map_err(dberr)?.rows_affected();
+    Ok(if n > 0 { "topup-expired".into() } else { "topup-expired(no-op)".into() })
 }

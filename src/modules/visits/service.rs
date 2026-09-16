@@ -1,7 +1,12 @@
-//! Service modul visits — core (Bagian V — Pesan Ustadz).
+//! Service modul visits v2 (Panggil Ustadz — ketersediaan mingguan, deposit, durasi jam).
+//! Semua query: kolom tanggal = DATE_FORMAT -> String (gotcha sqlx TIMESTAMP);
+//! tuple query_as <= 16 kolom (gotcha sqlx tuple).
+use chrono::Datelike;
+use chrono::Timelike;
 use sqlx::MySqlPool;
 
 use crate::modules::visits::dto::*;
+use crate::modules::visits::payments;
 use crate::shared::error::AppError;
 use crate::state::AppState;
 
@@ -10,8 +15,7 @@ pub fn dberr(e: sqlx::Error) -> AppError {
     AppError::Internal(format!("db: {e}"))
 }
 
-/// Minimal tarif default (open-decision k plan V; skema absolut Rp 1.000 — V0 finalisasi).
-pub const MIN_TARIF: i64 = 10_000;
+pub const MIN_TARIF_PER_JAM: i64 = 10_000;
 
 // ===================== helpers =====================
 
@@ -36,12 +40,6 @@ pub async fn visit_enabled(pool: &MySqlPool) -> Result<bool, AppError> {
     Ok(setting_str(pool, "visit_enabled").await.as_deref() == Some("true"))
 }
 
-fn parse_iso(s: &str) -> Result<chrono::NaiveDateTime, AppError> {
-    let s = s.trim().trim_end_matches('Z');
-    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
-        .map_err(|_| AppError::Unprocessable("scheduled_at format ISO UTC (2026-09-20T14:00:00Z)".into()))
-}
-
 pub fn haversine_km(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
     let (lat1, lng1, lat2, lng2) = (lat1.to_radians(), lng1.to_radians(), lat2.to_radians(), lng2.to_radians());
     let dlat = lat2 - lat1;
@@ -57,16 +55,9 @@ where
     let data = format!("{{\"deeplink\":\"visit:{deeplink}\"}}");
     sqlx::query(
         "INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
-         VALUES (?, ?, ?, ?, CAST(? AS JSON), 'IN_APP')",
-    )
-    .bind(user_id)
-    .bind(code)
-    .bind(title)
-    .bind(body)
-    .bind(data)
-    .execute(ex)
-    .await
-    .map_err(dberr)?;
+         VALUES (?, ?, ?, ?, CAST(? AS JSON), 'IN_APP')")
+        .bind(user_id).bind(code).bind(title).bind(body).bind(data)
+        .execute(ex).await.map_err(dberr)?;
     Ok(())
 }
 
@@ -75,47 +66,38 @@ where
     E: sqlx::Executor<'e, Database = sqlx::MySql>,
 {
     sqlx::query(
-        "INSERT INTO ustadz_visit_status_history (visit_id, from_status, to_status, actor_id, note) VALUES (?, ?, ?, ?, ?)",
-    )
-    .bind(visit_id)
-    .bind(from)
-    .bind(to)
-    .bind(actor)
-    .bind(note)
-    .execute(ex)
-    .await
-    .map_err(dberr)?;
+        "INSERT INTO ustadz_visit_status_history (visit_id, from_status, to_status, actor_id, note) VALUES (?, ?, ?, ?, ?)")
+        .bind(visit_id).bind(from).bind(to).bind(actor).bind(note)
+        .execute(ex).await.map_err(dberr)?;
     Ok(())
 }
 
-/// Kirim notif ke semua ADMIN/SUPER_ADMIN (mis. refund manual).
-pub async fn notify_admins(pool: &MySqlPool, code: &str, title: &str, body: &str, deeplink: &str) {
+pub async fn notify_admins(pool: &MySqlPool, title: &str, body: &str) {
     let ids: Vec<(i64,)> = sqlx::query_as(
-        "SELECT DISTINCT ur.user_id FROM user_roles ur \
-         JOIN roles r ON r.id = ur.role_id WHERE r.code IN ('ADMIN','SUPER_ADMIN') LIMIT 20")
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
+        "SELECT DISTINCT ur.user_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id \
+         WHERE r.code IN ('ADMIN','SUPER_ADMIN') LIMIT 20")
+        .fetch_all(pool).await.unwrap_or_default();
     for (uid,) in ids {
-        let _ = notify(&mut *pool.acquire().await.unwrap(), uid, code, title, body, deeplink).await;
+        if let Ok(mut conn) = pool.acquire().await {
+            let _ = notify(&mut *conn, uid, "KHATMIL_ASSIGN_RESULT", title, body, "").await;
+        }
     }
 }
 
-// ===================== row mappers =====================
+// ===================== visit row =====================
 
 pub struct VisitRow {
     pub id: i64,
     pub user_id: i64,
     pub ustadz_id: i64,
-    pub service_type_id: i64,
-    pub service_name: String,
-    pub scheduled_at: String,
-    pub duration: i64,
+    pub scheduled_at: String, // UTC "YYYY-MM-DD HH:MM:SS"
+    pub duration_hours: i64,
     pub lat: f64,
     pub lng: f64,
     pub address_label: String,
     pub note: Option<String>,
-    pub price: i64,
+    pub price_per_hour: i64,
+    pub price_total: i64,
     pub anonymized: bool,
     pub status: String,
     pub cancel_reason: Option<String>,
@@ -127,38 +109,61 @@ pub struct VisitRow {
     pub canceled_at: Option<String>,
 }
 
-#[allow(dead_code)]
-const VISIT_COLS: &str = "v.id, v.user_id, v.ustadz_id, v.service_type_id, vst.name, DATE_FORMAT(v.scheduled_at, '%Y-%m-%dT%H:%i:%sZ'), v.duration_minutes, \
-     CAST(v.lat AS DOUBLE), CAST(v.lng AS DOUBLE), v.address_label, v.note, v.price_amount, v.anonymized, v.status, \
-     v.cancel_reason, v.decline_reason, v.created_at, v.paid_at, v.confirmed_at, v.completed_at, v.canceled_at";
+const VISIT_COLS_A: &str =
+    "v.id, v.user_id, v.ustadz_id, DATE_FORMAT(v.scheduled_at, '%Y-%m-%d %H:%i:%s'), v.duration_hours, \
+     CAST(v.lat AS DOUBLE), CAST(v.lng AS DOUBLE), v.address_label, v.note, v.price_per_hour, v.price_total, \
+     v.anonymized, v.status, v.cancel_reason, v.decline_reason";
+const VISIT_COLS_B: &str =
+    "DATE_FORMAT(v.created_at, '%Y-%m-%d %H:%i:%s'), DATE_FORMAT(v.paid_at, '%Y-%m-%d %H:%i:%s'), \
+     DATE_FORMAT(v.confirmed_at, '%Y-%m-%d %H:%i:%s'), DATE_FORMAT(v.completed_at, '%Y-%m-%d %H:%i:%s'), \
+     DATE_FORMAT(v.canceled_at, '%Y-%m-%d %H:%i:%s')";
 
-fn map_visit_row(r: (i64, i64, i64, i64, String, String, i64, f64, f64, String, Option<String>, i64, i8, String, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>)) -> VisitRow {
+type VisitRowA = (i64, i64, i64, String, i64, f64, f64, String, Option<String>, i64, i64, i8, String, Option<String>, Option<String>);
+type VisitRowB = (String, Option<String>, Option<String>, Option<String>, Option<String>);
+
+fn map_visit(a: VisitRowA, b: VisitRowB) -> VisitRow {
     VisitRow {
-        id: r.0, user_id: r.1, ustadz_id: r.2, service_type_id: r.3, service_name: r.4,
-        scheduled_at: r.5, duration: r.6, lat: r.7, lng: r.8, address_label: r.9, note: r.10,
-        price: r.11, anonymized: r.12 != 0, status: r.13, cancel_reason: r.14, decline_reason: r.15,
-        created_at: r.16, paid_at: r.17, confirmed_at: r.18, completed_at: r.19, canceled_at: r.20,
+        id: a.0, user_id: a.1, ustadz_id: a.2, scheduled_at: a.3, duration_hours: a.4,
+        lat: a.5, lng: a.6, address_label: a.7, note: a.8,
+        price_per_hour: a.9, price_total: a.10, anonymized: a.11 != 0, status: a.12,
+        cancel_reason: a.13, decline_reason: a.14,
+        created_at: b.0, paid_at: b.1, confirmed_at: b.2, completed_at: b.3, canceled_at: b.4,
     }
 }
 
+/// Ambil visit terpisah 2 query (<= 16 kolom per query).
 pub async fn fetch_visit(pool: &MySqlPool, id: i64) -> Result<Option<VisitRow>, AppError> {
-    let a: Option<(i64, i64, i64, i64, String, String, i64, f64, f64, String, Option<String>, i64, i8, String)> = sqlx::query_as(
-        "SELECT v.id, v.user_id, v.ustadz_id, v.service_type_id, vst.name, DATE_FORMAT(v.scheduled_at, '%Y-%m-%dT%H:%i:%sZ'), v.duration_minutes,          CAST(v.lat AS DOUBLE), CAST(v.lng AS DOUBLE), v.address_label, v.note, v.price_amount, v.anonymized, v.status          FROM ustadz_visits v JOIN visit_service_types vst ON vst.id = v.service_type_id WHERE v.id = ?")
+    let a: Option<VisitRowA> = sqlx::query_as(
+        &format!("SELECT {VISIT_COLS_A} FROM ustadz_visits v WHERE v.id = ?"))
         .bind(id)
         .fetch_optional(pool)
         .await
         .map_err(dberr)?;
     let a = match a { Some(a) => a, None => return Ok(None) };
-    let b: (Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT cancel_reason, decline_reason, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(paid_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(confirmed_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(completed_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(canceled_at, '%Y-%m-%dT%H:%i:%sZ') FROM ustadz_visits WHERE id = ?")
+    let b: VisitRowB = sqlx::query_as(
+        &format!("SELECT {VISIT_COLS_B} FROM ustadz_visits v WHERE v.id = ?"))
         .bind(id)
         .fetch_one(pool)
         .await
         .map_err(dberr)?;
-    Ok(Some(map_visit_row((
-        a.0, a.1, a.2, a.3, a.4, a.5, a.6, a.7, a.8, a.9, a.10, a.11, a.12, a.13,
-        b.0, b.1, b.2, b.3, b.4, b.5, b.6,
-    ))))
+    Ok(Some(map_visit(a, b)))
+}
+
+async fn fetch_visit_tx(tx: &mut sqlx::Transaction<'_, sqlx::MySql>, id: i64) -> Result<Option<VisitRow>, AppError> {
+    let a: Option<VisitRowA> = sqlx::query_as(
+        &format!("SELECT {VISIT_COLS_A} FROM ustadz_visits v WHERE v.id = ? FOR UPDATE"))
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(dberr)?;
+    let a = match a { Some(a) => a, None => return Ok(None) };
+    let b: VisitRowB = sqlx::query_as(
+        &format!("SELECT {VISIT_COLS_B} FROM ustadz_visits v WHERE v.id = ? FOR UPDATE"))
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(dberr)?;
+    Ok(Some(map_visit(a, b)))
 }
 
 pub struct PaymentRow {
@@ -175,16 +180,13 @@ pub async fn fetch_payment(pool: &MySqlPool, visit_id: i64) -> Result<Option<Pay
     let row: Option<(i64, String, Option<String>, i64, String, i64, i64)> = sqlx::query_as(
         "SELECT id, external_id, xendit_invoice_id, amount, status, refunded_amount, subject_id \
          FROM payments WHERE subject_type = 'ustadz_visit' AND subject_id = ? ORDER BY id DESC LIMIT 1")
-        .bind(visit_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(dberr)?;
+        .bind(visit_id).fetch_optional(pool).await.map_err(dberr)?;
     Ok(row.map(|r| PaymentRow { id: r.0, external_id: r.1, invoice_id: r.2, amount: r.3, status: r.4, refunded_amount: r.5, subject_id: r.6 }))
 }
 
-async fn fetch_party(pool: &MySqlPool, user_id: i64) -> PartyOut {
+async fn party(pool: &MySqlPool, user_id: i64) -> PartyOut {
     let (name, phone): (String, Option<String>) = sqlx::query_as(
-        "SELECT COALESCE(NULLIF(up.full_name, ''), 'Tanpa Nama'), u.phone \
+        "SELECT COALESCE(NULLIF(up.full_name,''),'Tanpa Nama'), u.phone \
          FROM users u LEFT JOIN user_profiles up ON up.user_id = u.id WHERE u.id = ?")
         .bind(user_id)
         .fetch_one(pool)
@@ -193,27 +195,15 @@ async fn fetch_party(pool: &MySqlPool, user_id: i64) -> PartyOut {
     PartyOut { user_id, full_name: name, phone }
 }
 
-#[allow(dead_code)]
-pub fn ts(d: chrono::NaiveDateTime) -> String {
-    d.format("%Y-%m-%dT%H:%M:%SZ").to_string()
-}
-fn ts_o(d: &Option<chrono::NaiveDateTime>) -> Option<String> {
-    d.as_ref().map(|x| ts(*x))
-}
-
-/// `contact_open` = status >= CONFIRMED (kontak dua arah terbuka — keputusan #7 Bagian V)
 fn contact_open(status: &str) -> bool {
     matches!(status, "CONFIRMED" | "COMPLETED" | "REVIEWED")
 }
 
-/// Bangun VisitOut. `viewer` = Some(user_id peserta) / None = admin (lihat semua kecuali koordinat santri utk admin? admin boleh).
-async fn visit_out(pool: &MySqlPool, v: &VisitRow, viewer: Option<i64>) -> Result<VisitOut, AppError> {
-    let is_admin = matches!(viewer, None);
-    let is_ustadz_side = matches!(viewer, Some(uid) if uid == v.ustadz_id);
+pub async fn visit_out(pool: &MySqlPool, v: &VisitRow, viewer: Option<i64>) -> Result<VisitOut, AppError> {
+    let is_admin = viewer.is_none();
     let payment = fetch_payment(pool, v.id).await?;
-    let mut ustadz = fetch_party(pool, v.ustadz_id).await;
-    let mut requester = fetch_party(pool, v.user_id).await;
-    // privacy: phone dua arah HANYA setelah CONFIRMED (kecuali admin)
+    let mut ustadz = party(pool, v.ustadz_id).await;
+    let mut requester = party(pool, v.user_id).await;
     if !contact_open(&v.status) && !is_admin {
         ustadz.phone = None;
         requester.phone = None;
@@ -222,27 +212,21 @@ async fn visit_out(pool: &MySqlPool, v: &VisitRow, viewer: Option<i64>) -> Resul
     Ok(VisitOut {
         id: v.id,
         status: v.status.clone(),
-        service_type_id: v.service_type_id,
-        service_name: v.service_name.clone(),
         scheduled_at: v.scheduled_at.clone(),
-        duration_minutes: v.duration,
+        duration_hours: v.duration_hours,
+        price_per_hour: v.price_per_hour,
+        price_total: v.price_total,
         address_label: if v.anonymized { "—".into() } else { v.address_label.clone() },
         note: v.note.clone(),
-        price_amount: v.price,
         lat: if show_coords && !v.anonymized { Some(v.lat) } else { None },
         lng: if show_coords && !v.anonymized { Some(v.lng) } else { None },
         anonymized: v.anonymized,
-        ustadz: if is_ustadz_side || is_admin || true { Some(ustadz) } else { None },
+        ustadz: Some(ustadz),
         requester: Some(requester),
         payment: payment.map(|p| PaymentOut {
-            id: p.id,
-            external_id: p.external_id,
-            status: p.status,
-            invoice_url: None, // diisi caller bila perlu (mock/live URL disimpan di payments? tidak — URL tidak disimpan; regenerate via /pay)
-            amount: p.amount,
-            refunded_amount: p.refunded_amount,
-            expires_at: None,
-            paid_at: None,
+            id: p.id, external_id: p.external_id, status: p.status,
+            invoice_url: None, amount: p.amount, refunded_amount: p.refunded_amount,
+            expires_at: None, paid_at: None,
         }),
         created_at: v.created_at.clone(),
         paid_at: v.paid_at.clone(),
@@ -254,29 +238,94 @@ async fn visit_out(pool: &MySqlPool, v: &VisitRow, viewer: Option<i64>) -> Resul
     })
 }
 
-/// Publik utk handler: bangun VisitOut utk viewer (Some=peserta / None=admin).
 pub async fn visit_detail_out(pool: &MySqlPool, v: &VisitRow, viewer: Option<i64>) -> Result<VisitOut, AppError> {
     visit_out(pool, v, viewer).await
 }
 
-// ===================== layanan & nearby =====================
+// ===================== ketersediaan (ustadz) =====================
 
-pub async fn list_services(pool: &MySqlPool) -> Result<Vec<ServiceTypeOut>, AppError> {
-    let rows: Vec<(i64, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, code, name, description FROM visit_service_types WHERE active = 1 ORDER BY sort_order, id")
-        .fetch_all(pool)
-        .await
-        .map_err(dberr)?;
-    Ok(rows.into_iter().map(|r| ServiceTypeOut { id: r.0, code: r.1, name: r.2, description: r.3 }).collect())
+pub async fn get_availability(pool: &MySqlPool, ustadz_id: i64) -> Result<serde_json::Value, AppError> {
+    let slots: Vec<(i64, i8, i64, i64)> = sqlx::query_as(
+        "SELECT id, weekday, start_minute, end_minute FROM ustadz_availability_slots \
+         WHERE ustadz_id = ? ORDER BY FIELD(weekday,1,2,3,4,5,6,0), start_minute")
+        .bind(ustadz_id).fetch_all(pool).await.map_err(dberr)?;
+    let blackouts: Vec<(chrono::NaiveDate, Option<String>)> = sqlx::query_as(
+        "SELECT off_date, note FROM ustadz_blackout_dates WHERE ustadz_id = ? ORDER BY off_date")
+        .bind(ustadz_id).fetch_all(pool).await.map_err(dberr)?;
+    Ok(serde_json::json!({
+        "slots": slots.iter().map(|s| serde_json::json!({
+            "id": s.0, "weekday": s.1,
+            "start": format!("{:02}:{:02}", s.2 / 60, s.2 % 60),
+            "end": format!("{:02}:{:02}", s.3 / 60, s.3 % 60),
+        })).collect::<Vec<_>>(),
+        "blackouts": blackouts.iter().map(|b| serde_json::json!({
+            "off_date": b.0.format("%Y-%m-%d").to_string(),
+            "note": b.1,
+        })).collect::<Vec<_>>(),
+    }))
 }
 
-pub async fn nearby(
-    state: &AppState,
-    user_id: i64,
-    lat: f64,
-    lng: f64,
-    service_type_id: Option<i64>,
-) -> Result<Vec<NearbyUstadz>, AppError> {
+pub async fn add_slot(pool: &MySqlPool, ustadz_id: i64, weekday: i8, start_minute: i16, end_minute: i16) -> Result<i64, AppError> {
+    if !(0..=6).contains(&weekday) {
+        return Err(AppError::Unprocessable("weekday 0-6 (0=Minggu)".into()));
+    }
+    if !(0..1439).contains(&start_minute) || !(1..=1440).contains(&end_minute) || end_minute <= start_minute {
+        return Err(AppError::Unprocessable("rentang jam tidak valid (end > start)".into()));
+    }
+    if end_minute - start_minute < 60 {
+        return Err(AppError::Unprocessable("rentang minimal 1 jam".into()));
+    }
+    let dup: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ustadz_availability_slots WHERE ustadz_id = ? AND weekday = ? \
+         AND NOT (end_minute <= ? OR start_minute >= ?)")
+        .bind(ustadz_id).bind(weekday).bind(start_minute).bind(end_minute)
+        .fetch_one(pool).await.map_err(dberr)?;
+    if dup > 0 {
+        return Err(AppError::Conflict("rentang jam tumpang tindih dgn slot lain".into()));
+    }
+    let cnt: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ustadz_availability_slots WHERE ustadz_id = ? AND weekday = ?")
+        .bind(ustadz_id).bind(weekday).fetch_one(pool).await.map_err(dberr)?;
+    if cnt >= 3 {
+        return Err(AppError::Unprocessable("maksimal 3 rentang per hari".into()));
+    }
+    let ins = sqlx::query(
+        "INSERT INTO ustadz_availability_slots (ustadz_id, weekday, start_minute, end_minute) VALUES (?, ?, ?, ?)")
+        .bind(ustadz_id).bind(weekday).bind(start_minute).bind(end_minute)
+        .execute(pool).await.map_err(dberr)?;
+    Ok(ins.last_insert_id() as i64)
+}
+
+pub async fn delete_slot(pool: &MySqlPool, ustadz_id: i64, slot_id: i64) -> Result<(), AppError> {
+    let n = sqlx::query("DELETE FROM ustadz_availability_slots WHERE id = ? AND ustadz_id = ?")
+        .bind(slot_id).bind(ustadz_id)
+        .execute(pool).await.map_err(dberr)?.rows_affected();
+    if n == 0 { return Err(AppError::NotFound("slot tidak ada".into())); }
+    Ok(())
+}
+
+pub async fn add_blackout(pool: &MySqlPool, ustadz_id: i64, off_date: &str, note: Option<String>) -> Result<(), AppError> {
+    let d = chrono::NaiveDate::parse_from_str(off_date, "%Y-%m-%d")
+        .map_err(|_| AppError::Unprocessable("tanggal YYYY-MM-DD".into()))?;
+    sqlx::query("INSERT IGNORE INTO ustadz_blackout_dates (ustadz_id, off_date, note) VALUES (?, ?, ?)")
+        .bind(ustadz_id).bind(d).bind(note.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+        .execute(pool).await.map_err(dberr)?;
+    Ok(())
+}
+
+pub async fn delete_blackout(pool: &MySqlPool, ustadz_id: i64, off_date: &str) -> Result<(), AppError> {
+    let d = chrono::NaiveDate::parse_from_str(off_date, "%Y-%m-%d")
+        .map_err(|_| AppError::Unprocessable("tanggal YYYY-MM-DD".into()))?;
+    let n = sqlx::query("DELETE FROM ustadz_blackout_dates WHERE ustadz_id = ? AND off_date = ?")
+        .bind(ustadz_id).bind(d)
+        .execute(pool).await.map_err(dberr)?.rows_affected();
+    if n == 0 { return Err(AppError::NotFound("tanggal libur tidak ada".into())); }
+    Ok(())
+}
+
+// ===================== nearby & slots (santri) =====================
+
+pub async fn nearby(state: &AppState, lat: f64, lng: f64) -> Result<Vec<NearbyUstadz>, AppError> {
     if !visit_enabled(&state.pool).await? {
         return Err(AppError::Forbidden("modul Pesan Ustadz sedang nonaktif".into()));
     }
@@ -284,9 +333,9 @@ pub async fn nearby(
     let fresh_h = setting_i64(&state.pool, "visit_location_fresh_hours", 6).await;
     let dlat = radius / 111.0;
     let dlng = radius / (111.0 * lat.to_radians().cos().max(0.2));
-    let rows: Vec<(i64, String, f64, f64, i64, String, i64, i64, Option<f64>, i64)> = sqlx::query_as(
-        &format!("SELECT u.id, COALESCE(NULLIF(upn.full_name,''),'Ustadz'), CAST(ul.lat AS DOUBLE), CAST(ul.lng AS DOUBLE), \
-         uvsr.service_type_id, vst.name, uvsr.price_amount, uvsr.duration_minutes, \
+    let rows: Vec<(i64, String, f64, f64, i64, Option<f64>, i64)> = sqlx::query_as(&format!(
+        "SELECT u.id, COALESCE(NULLIF(upn.full_name,''),'Ustadz'), CAST(ul.lat AS DOUBLE), CAST(ul.lng AS DOUBLE), \
+         vs.price_per_hour, \
          (SELECT CAST(AVG(vr.rating) AS DOUBLE) FROM visit_reviews vr WHERE vr.reviewee_id = u.id \
             AND vr.direction = 'SANTRI_TO_USTADZ' AND vr.revealed_at IS NOT NULL AND vr.hidden = 0), \
          (SELECT COUNT(*) FROM visit_reviews vr2 WHERE vr2.reviewee_id = u.id \
@@ -295,164 +344,194 @@ pub async fn nearby(
          JOIN user_profiles upn ON upn.user_id = u.id \
          JOIN ustadz_profiles up ON up.user_id = u.id AND up.verified_at IS NOT NULL \
          JOIN ustadz_visit_settings vs ON vs.ustadz_id = u.id AND vs.is_accepting = 1 \
-         JOIN user_locations ul ON ul.user_id = u.id AND ul.recorded_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {fresh_h} HOUR) \
-         JOIN ustadz_visit_services uvsr ON uvsr.ustadz_id = u.id AND uvsr.active = 1 \
-         JOIN visit_service_types vst ON vst.id = uvsr.service_type_id AND vst.active = 1 \
-         WHERE u.status = 'ACTIVE' AND (? IS NULL OR uvsr.service_type_id = ?) \
-           AND ul.lat BETWEEN ? AND ? AND ul.lng BETWEEN ? AND ?"))
-        .bind(service_type_id).bind(service_type_id)
+         JOIN user_locations ul ON ul.user_id = u.id \
+           AND ul.recorded_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {fresh_h} HOUR) \
+         WHERE u.status = 'ACTIVE' \
+           AND ul.lat BETWEEN ? AND ? AND ul.lng BETWEEN ? AND ? \
+           AND (SELECT COUNT(*) FROM ustadz_availability_slots s WHERE s.ustadz_id = u.id) > 0"))
         .bind(lat - dlat).bind(lat + dlat)
         .bind(lng - dlng).bind(lng + dlng)
         .fetch_all(&state.pool)
         .await
         .map_err(dberr)?;
-
-    let _ = user_id;
-    use std::collections::BTreeMap;
-    let mut map: BTreeMap<i64, NearbyUstadz> = BTreeMap::new();
-    for r in rows {
+    let mut out: Vec<NearbyUstadz> = rows.into_iter().map(|r| {
         let dist = haversine_km(lat, lng, r.2, r.3);
-        if dist > radius {
-            continue;
+        NearbyUstadz {
+            ustadz_id: r.0, full_name: r.1, distance_km: dist,
+            rating_avg: r.5, rating_count: r.6, price_per_hour: r.4,
         }
-        let e = map.entry(r.0).or_insert_with(|| NearbyUstadz {
-            ustadz_id: r.0,
-            full_name: r.1.clone(),
-            distance_km: dist,
-            rating_avg: r.8,
-            rating_count: r.9,
-            services: vec![],
-        });
-        e.distance_km = e.distance_km.min(dist);
-        e.services.push(TarifOut {
-            service_type_id: r.4,
-            service_type_name: r.5,
-            price_amount: r.6,
-            duration_minutes: r.7,
-        });
-    }
-    let mut out: Vec<NearbyUstadz> = map.into_values().collect();
+    }).filter(|u| u.distance_km <= radius).collect();
     out.sort_by(|a, b| a.distance_km.partial_cmp(&b.distance_km).unwrap_or(std::cmp::Ordering::Equal));
     Ok(out)
 }
 
-// ===================== create / list / detail =====================
+/// Daftar jam mulai (WIB, bulat) yang tersedia utk tanggal & durasi tertentu.
+pub async fn slots_for_date(
+    pool: &MySqlPool,
+    ustadz_id: i64,
+    date: &str,
+    hours: i64,
+) -> Result<Vec<String>, AppError> {
+    let d = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|_| AppError::Unprocessable("date YYYY-MM-DD".into()))?;
+    let weekday = d.weekday().num_days_from_sunday() as i8; // 0=Minggu
+    let bo: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ustadz_blackout_dates WHERE ustadz_id = ? AND off_date = ?")
+        .bind(ustadz_id).bind(d).fetch_one(pool).await.map_err(dberr)?;
+    if bo > 0 { return Ok(vec![]); }
+    let slots: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT start_minute, end_minute FROM ustadz_availability_slots \
+         WHERE ustadz_id = ? AND weekday = ? ORDER BY start_minute")
+        .bind(ustadz_id).bind(weekday)
+        .fetch_all(pool).await.map_err(dberr)?;
+    if slots.is_empty() { return Ok(vec![]); }
 
-pub struct CreateOutcome {
-    pub out: VisitCreatedOut,
+    let busy: Vec<(chrono::NaiveDateTime, i64)> = sqlx::query_as(
+        "SELECT scheduled_at, duration_minutes FROM ustadz_visits \
+         WHERE ustadz_id = ? AND status IN ('REQUESTED','WAITING_CONFIRM','CONFIRMED')")
+        .bind(ustadz_id).fetch_all(pool).await.map_err(dberr)?;
+
+    let now_utc: chrono::NaiveDateTime = sqlx::query_scalar("SELECT UTC_TIMESTAMP()")
+        .fetch_one(pool).await.map_err(dberr)?;
+    let min_h = setting_i64(pool, "visit_min_schedule_hours", 2).await;
+    let earliest_utc = now_utc + chrono::Duration::hours(min_h);
+
+    let mut out = Vec::new();
+    for (start_m, end_m) in slots {
+        let mut m = start_m;
+        while m + hours * 60 <= end_m {
+            let base_wib = d.and_hms_opt(0, 0, 0).unwrap() + chrono::Duration::minutes(m as i64);
+            let start_utc = base_wib - chrono::Duration::hours(7);
+            if start_utc >= earliest_utc {
+                let end_utc = start_utc + chrono::Duration::hours(hours);
+                let bentrok = busy.iter().any(|(s, dm)| {
+                    let e = *s + chrono::Duration::minutes((*dm).max(1) as i64);
+                    *s < end_utc && e > start_utc
+                });
+                if !bentrok {
+                    out.push(format!("{:02}:{:02}", m / 60, m % 60));
+                }
+            }
+            m += 60;
+        }
+    }
+    Ok(out)
 }
+
+// ===================== create (hold + payment) =====================
 
 pub async fn create_visit(
     state: &AppState,
     user_id: i64,
     req: CreateVisitReq,
     idem_key: &str,
-) -> Result<CreateOutcome, AppError> {
+) -> Result<VisitCreatedOut, AppError> {
     if !visit_enabled(&state.pool).await? {
         return Err(AppError::Forbidden("modul Pesan Ustadz sedang nonaktif".into()));
     }
     if !state.visit_create_gate(&user_id) {
         return Err(AppError::RateLimited);
     }
-    // idempotency: pre-SELECT dulu (gotcha sqlx: ODKU affected_rows tak andal)
+    // idempotency: pre-SELECT
     let existing: Option<i64> = sqlx::query_scalar(
         "SELECT id FROM ustadz_visits WHERE user_id = ? AND client_key = ?")
         .bind(user_id).bind(idem_key)
         .fetch_optional(&state.pool).await.map_err(dberr)?;
     if let Some(vid) = existing {
         let v = fetch_visit(&state.pool, vid).await?.ok_or_else(|| AppError::NotFound("booking hilang".into()))?;
-        let p = fetch_payment(&state.pool, vid).await?;
-        let out = VisitCreatedOut {
-            visit: visit_out(&state.pool, &v, Some(user_id)).await?,
-            invoice_url: p.as_ref().and_then(|_| None), // invoice URL tidak disimpan — regenerate /pay
-            replay: true,
-        };
-        return Ok(CreateOutcome { out });
+        let out = visit_out(&state.pool, &v, Some(user_id)).await?;
+        return Ok(VisitCreatedOut { visit: out, invoice_url: None, replay: true });
     }
-    // validasi layanan
-    let svc: Option<(i64, i64, i64)> = sqlx::query_as(
-        "SELECT uvsr.price_amount, uvsr.duration_minutes, vst.active FROM ustadz_visit_services uvsr \
-         JOIN visit_service_types vst ON vst.id = uvsr.service_type_id \
-         WHERE uvsr.ustadz_id = ? AND uvsr.service_type_id = ? AND uvsr.active = 1")
-        .bind(req.ustadz_id).bind(req.service_type_id)
-        .fetch_optional(&state.pool).await.map_err(dberr)?;
-    let (price, duration) = match svc {
-        Some((p, d, 1)) if p >= MIN_TARIF => (p, d),
-        Some((p, _, 1)) => return Err(AppError::Unprocessable(format!("tarif layanan belum memenuhi minimal Rp {MIN_TARIF} (saat ini Rp {p})"))),
-        _ => return Err(AppError::Unprocessable("ustadz belum membuka layanan ini".into())),
-    };
-    // jadwal window
-    let sched = parse_iso(&req.scheduled_at)?;
-    let min_h = setting_i64(&state.pool, "visit_min_schedule_hours", 2).await;
-    let max_d = setting_i64(&state.pool, "visit_max_schedule_days", 14).await;
-    let n: (i64, i64,) = sqlx::query_as(
-        "SELECT TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), ?), TIMESTAMPDIFF(HOUR, UTC_TIMESTAMP(), ?)")
-        .bind(sched).bind(sched)
-        .fetch_one(&state.pool).await.map_err(dberr)?;
-    if n.0 < min_h * 60 {
-        return Err(AppError::Unprocessable(format!("jadwal minimal {min_h} jam dari sekarang")));
-    }
-    if n.1 > max_d * 24 {
-        return Err(AppError::Unprocessable(format!("jadwal maksimal {max_d} hari ke depan")));
-    }
-    // ustadz valid + lokasi fresh + jarak dalam radius
-    let radius = setting_i64(&state.pool, "visit_radius_km", 5).await.clamp(1, 50) as f64;
-    let fresh_h = setting_i64(&state.pool, "visit_location_fresh_hours", 6).await;
-    let uloc: Option<(f64, f64)> = sqlx::query_as(
-        &format!("SELECT CAST(ul.lat AS DOUBLE), CAST(ul.lng AS DOUBLE) \
-         FROM users u \
-         JOIN user_profiles upn ON upn.user_id = u.id \
+
+    // ustadz valid + accepting + tarif
+    let tarif: Option<(i64,)> = sqlx::query_as(
+        "SELECT vs.price_per_hour FROM users u \
          JOIN ustadz_profiles up ON up.user_id = u.id AND up.verified_at IS NOT NULL \
          JOIN ustadz_visit_settings vs ON vs.ustadz_id = u.id AND vs.is_accepting = 1 \
-         JOIN user_locations ul ON ul.user_id = u.id AND ul.recorded_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {fresh_h} HOUR) \
-         WHERE u.id = ? AND u.status = 'ACTIVE'"))
-        .bind(req.ustadz_id)
-        .fetch_optional(&state.pool).await.map_err(dberr)?;
-    let (ulat, ulng) = uloc.ok_or_else(|| AppError::Unprocessable("ustadz sedang tidak dapat dipesan (offline / lokasi tidak segar)".into()))?;
-    let dist = haversine_km(req.lat, req.lng, ulat, ulng);
-    if dist > radius {
-        return Err(AppError::Unprocessable(format!("lokasi Anda di luar radius layanan ustadz ({:.1} km > {radius} km)", dist.ceil())));
+         WHERE u.id = ? AND u.status = 'ACTIVE' AND vs.price_per_hour >= 1000")
+        .bind(req.ustadz_id).fetch_optional(&state.pool).await.map_err(dberr)?;
+    let price_per_hour = match tarif {
+        Some((p,)) => p,
+        None => return Err(AppError::Unprocessable("ustadz sedang tidak menerima pesanan".into())),
+    };
+    if !(1..=8).contains(&req.duration_hours) {
+        return Err(AppError::Unprocessable("durasi 1-8 jam".into()));
     }
-    // INSERT visit (DB-enforced max-1-aktif + idempotency)
+    let sched_wib = chrono::NaiveDateTime::parse_from_str(
+        &format!("{} {}:00", req.date, req.start_time), "%Y-%m-%d %H:%M:%S")
+        .map_err(|_| AppError::Unprocessable("tanggal/jam tidak valid".into()))?;
+    let sched_utc = sched_wib - chrono::Duration::hours(7);
+    let hhmm = format!("{:02}:{:02}", sched_wib.hour(), sched_wib.minute());
+    let avail = slots_for_date(&state.pool, req.ustadz_id, &req.date, req.duration_hours).await?;
+    if !avail.contains(&hhmm) {
+        return Err(AppError::Unprocessable(format!("jam {hhmm} tidak tersedia — pilih jam dari daftar")));
+    }
+    let radius = setting_i64(&state.pool, "visit_radius_km", 5).await.clamp(1, 50) as f64;
+    if let Some((ulat, ulng)) = sqlx::query_as::<_, (f64, f64)>(
+        "SELECT CAST(ul.lat AS DOUBLE), CAST(ul.lng AS DOUBLE) FROM user_locations ul WHERE ul.user_id = ?")
+        .bind(req.ustadz_id).fetch_optional(&state.pool).await.map_err(dberr)?
+    {
+        let dist = haversine_km(req.lat, req.lng, ulat, ulng);
+        if dist > radius {
+            return Err(AppError::Unprocessable(format!(
+                "lokasi Anda di luar radius layanan ustadz ({:.1} km > {radius} km)", dist.ceil())));
+        }
+    }
+    let price_total = price_per_hour * req.duration_hours;
+
+    // atomik: lock settings ustadz (serialisasi per ustadz), cek overlap, insert
+    let mut tx = state.pool.begin().await.map_err(dberr)?;
+    sqlx::query("SELECT ustadz_id FROM ustadz_visit_settings WHERE ustadz_id = ? FOR UPDATE")
+        .bind(req.ustadz_id)
+        .fetch_optional(&mut *tx).await.map_err(dberr)?;
+    let overlap: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM ustadz_visits WHERE ustadz_id = ? \
+         AND status IN ('REQUESTED','WAITING_CONFIRM','CONFIRMED') \
+         AND scheduled_at < DATE_ADD(?, INTERVAL ? MINUTE) \
+         AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > ?")
+        .bind(req.ustadz_id).bind(sched_utc).bind(req.duration_hours * 60).bind(sched_utc)
+        .fetch_one(&mut *tx).await.map_err(dberr)?;
+    if overlap > 0 {
+        tx.rollback().await.map_err(dberr)?;
+        return Err(AppError::Conflict("ustadz_schedule_conflict: jam itu baru saja terisi".into()));
+    }
     let ins = sqlx::query(
-        "INSERT INTO ustadz_visits (user_id, ustadz_id, service_type_id, scheduled_at, duration_minutes, \
-         lat, lng, address_label, note, client_key, price_amount, status) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'REQUESTED')")
-        .bind(user_id).bind(req.ustadz_id).bind(req.service_type_id).bind(sched)
-        .bind(duration).bind(req.lat).bind(req.lng)
-        .bind(req.address_label.trim()).bind(req.note.as_deref().map(str::trim).filter(|s| !s.is_empty()))
-        .bind(idem_key).bind(price)
-        .execute(&state.pool).await;
+        "INSERT INTO ustadz_visits (user_id, ustadz_id, scheduled_at, duration_hours, duration_minutes, \
+         lat, lng, address_label, note, client_key, price_per_hour, price_amount, status, hold_expires_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'REQUESTED', \
+         DATE_ADD(UTC_TIMESTAMP(), INTERVAL (SELECT CAST(value AS UNSIGNED) FROM settings WHERE `key`='visit_invoice_duration_sec') MINUTE))")
+        .bind(user_id).bind(req.ustadz_id).bind(sched_utc).bind(req.duration_hours * 60)
+        .bind(req.lat).bind(req.lng).bind(req.address_label.trim())
+        .bind(req.note.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+        .bind(idem_key).bind(price_per_hour).bind(price_total)
+        .execute(&mut *tx).await;
     let visit_id = match ins {
         Ok(r) => r.last_insert_id() as i64,
         Err(e) => {
-            let msg = format!("{e}");
-            if msg.contains("uv_active_uq") {
+            let m = format!("{e}");
+            if m.contains("uv_active_uq") {
                 return Err(AppError::Conflict("masih ada pesanan aktif — selesaikan/batalkan dulu".into()));
             }
-            if msg.contains("uv_client_uq") {
-                // race replay: ambil existing
+            if m.contains("uv_client_uq") {
                 let vid: (i64,) = sqlx::query_as("SELECT id FROM ustadz_visits WHERE user_id = ? AND client_key = ?")
-                    .bind(user_id).bind(idem_key)
-                    .fetch_one(&state.pool).await.map_err(dberr)?;
-                let v = fetch_visit(&state.pool, vid.0).await?.ok_or_else(|| AppError::NotFound("booking hilang".into()))?;
-                return Ok(CreateOutcome {
-                    out: VisitCreatedOut { visit: visit_out(&state.pool, &v, Some(user_id)).await?, invoice_url: None, replay: true },
-                });
+                    .bind(user_id).bind(idem_key).fetch_one(&state.pool).await.map_err(dberr)?;
+                let v = fetch_visit(&state.pool, vid.0).await?.unwrap();
+                return Ok(VisitCreatedOut { visit: visit_out(&state.pool, &v, Some(user_id)).await?, invoice_url: None, replay: true });
             }
             return Err(dberr(e));
         }
     };
-    log_history(&state.pool, visit_id, None, "REQUESTED", Some(user_id), "booking dibuat").await?;
-    // payment + invoice (via modul payments)
-    let created = crate::modules::visits::payments::create_payment_for_visit(state, visit_id, price).await?;
+    log_history(&mut *tx, visit_id, None, "REQUESTED", Some(user_id), "booking dibuat (slot ditahan)").await?;
+    tx.commit().await.map_err(dberr)?;
+
+    let (payment_id, external_id) = payments::create_payment_pending(state, visit_id, price_total).await?;
+    let invoice_url = payments::try_issue_invoice(state, payment_id, &external_id, price_total).await;
+
     let v = fetch_visit(&state.pool, visit_id).await?.unwrap();
-    Ok(CreateOutcome {
-        out: VisitCreatedOut {
-            visit: visit_out(&state.pool, &v, Some(user_id)).await?,
-            invoice_url: created,
-            replay: false,
-        },
+    Ok(VisitCreatedOut {
+        visit: visit_out(&state.pool, &v, Some(user_id)).await?,
+        invoice_url,
+        replay: false,
     })
 }
 
@@ -464,10 +543,7 @@ pub async fn list_my(pool: &MySqlPool, user_id: i64, limit: i64, cursor: Option<
     let mut out = Vec::new();
     let mut next = None;
     for (i, (id,)) in rows.into_iter().enumerate() {
-        if (i as i64) == limit {
-            next = Some(id.to_string());
-            break;
-        }
+        if (i as i64) == limit { next = Some(id.to_string()); break; }
         if let Some(v) = fetch_visit(pool, id).await? {
             out.push(visit_out(pool, &v, Some(user_id)).await?);
         }
@@ -475,12 +551,11 @@ pub async fn list_my(pool: &MySqlPool, user_id: i64, limit: i64, cursor: Option<
     Ok((out, next))
 }
 
-/// ACL: peserta (santri/ustadz) atau admin.
 pub async fn require_visit_access(pool: &MySqlPool, user: &crate::middleware::auth::CurrentUser, visit_id: i64) -> Result<VisitRow, AppError> {
     let v = fetch_visit(pool, visit_id).await?.ok_or_else(|| AppError::NotFound("pesanan tidak ada".into()))?;
     let is_party = v.user_id == user.user_id || v.ustadz_id == user.user_id;
     if !is_party && !user.permissions.contains("visits.admin") {
-        return Err(AppError::NotFound("pesanan tidak ada".into())); // 404 anti-guess
+        return Err(AppError::NotFound("pesanan tidak ada".into()));
     }
     Ok(v)
 }
@@ -489,11 +564,11 @@ pub async fn require_visit_access(pool: &MySqlPool, user: &crate::middleware::au
 
 pub async fn cancel(state: &AppState, user: &crate::middleware::auth::CurrentUser, visit_id: i64) -> Result<VisitOut, AppError> {
     let v = require_visit_access(&state.pool, user, visit_id).await?;
-    let now_utc: chrono::NaiveDateTime = sqlx::query_scalar("SELECT UTC_TIMESTAMP()")
-        .fetch_one(&state.pool).await.map_err(dberr)?;
+    if v.user_id != user.user_id {
+        return Err(AppError::Forbidden("hanya pemesan yang bisa membatalkan".into()));
+    }
     match v.status.as_str() {
         "REQUESTED" => {
-            // belum dibayar: void payment aktif tanpa refund
             let mut tx = state.pool.begin().await.map_err(dberr)?;
             sqlx::query("UPDATE payments SET status = 'EXPIRED' WHERE subject_type = 'ustadz_visit' AND subject_id = ? AND status = 'PENDING'")
                 .bind(visit_id).execute(&mut *tx).await.map_err(dberr)?;
@@ -510,23 +585,28 @@ pub async fn cancel(state: &AppState, user: &crate::middleware::auth::CurrentUse
             let mut tx = state.pool.begin().await.map_err(dberr)?;
             sqlx::query("UPDATE ustadz_visits SET status = 'CANCELED', canceled_at = UTC_TIMESTAMP(), canceled_by = ?, cancel_reason = ?")
                 .bind(user.user_id)
-                .bind(if refund_full { "dibatalkan — dana dikembalikan penuh" } else { "dibatalkan kurang dari batas gratis — dana ke ustadz" })
+                .bind(if refund_full { "dibatalkan — dana dikembalikan ke saldo" } else { "dibatalkan kurang dari batas gratis — dana untuk ustadz" })
                 .execute(&mut *tx).await.map_err(dberr)?;
-            log_history(&mut *tx, visit_id, Some(v.status.as_str()), "CANCELED", Some(user.user_id), if refund_full { "refund penuh" } else { "tanpa refund (< batas gratis)" }).await?;
+            log_history(&mut *tx, visit_id, Some(v.status.as_str()), "CANCELED", Some(user.user_id),
+                if refund_full { "refund penuh ke saldo" } else { "tanpa refund (< batas gratis)" }).await?;
             tx.commit().await.map_err(dberr)?;
             if refund_full {
-                crate::modules::visits::payments::attempt_refund(state, visit_id, "santri cancel").await?;
+                payments::refund_visit_to_deposit(state, visit_id, "santri cancel").await?;
+            } else {
+                // kompensasi ustadz langsung ke saldo penghasilannya
+                let p = fetch_payment(&state.pool, visit_id).await?;
+                if let Some(p) = p {
+                    if p.status == "PAID" {
+                        crate::modules::wallet::service::credit(&state.pool, v.ustadz_id, p.amount, "EARNING", "ustadz_visit", visit_id).await?;
+                    }
+                }
             }
             let v2 = fetch_visit(&state.pool, visit_id).await?.unwrap();
-            let (uid,) : (i64,) = (v2.ustadz_id,);
-            notify(&state.pool, uid, "VISIT_CANCELED", "Kunjungan dibatalkan",
-                &format!("Kunjungan {} dibatalkan oleh santri. {}", v.scheduled_at,
-                    if refund_full { "Dana dikembalikan ke santri." } else { "Dana kunjungan menjadi milik Anda." }),
-                &visit_id.to_string()).await?;
+            notify(&state.pool, v2.ustadz_id, "VISIT_CANCELED", "Kunjungan dibatalkan",
+                &format!("Kunjungan {} dibatalkan oleh santri.", v2.scheduled_at), &visit_id.to_string()).await?;
         }
         other => return Err(AppError::Unprocessable(format!("status {other} tidak bisa dibatalkan"))),
     }
-    let _ = now_utc;
     let v2 = fetch_visit(&state.pool, visit_id).await?.unwrap();
     Ok(visit_out(&state.pool, &v2, Some(user.user_id)).await?)
 }
@@ -542,26 +622,20 @@ pub async fn messages_list(
 ) -> Result<(Vec<MessageOut>, Option<String>), AppError> {
     let v = require_visit_access(pool, user, visit_id).await?;
     let rows: Vec<(i64, i64, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, sender_id, body, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(read_at, '%Y-%m-%dT%H:%i:%sZ') FROM visit_messages \
-         WHERE visit_id = ? AND (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?")
+        "SELECT id, sender_id, body, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(read_at, '%Y-%m-%dT%H:%i:%sZ') \
+         FROM visit_messages WHERE visit_id = ? AND (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?")
         .bind(visit_id).bind(cursor).bind(cursor).bind(limit + 1)
         .fetch_all(pool).await.map_err(dberr)?;
     let mut out = Vec::new();
     let mut next = None;
     for (i, r) in rows.into_iter().enumerate() {
-        if (i as i64) == limit {
-            next = Some(r.0.to_string());
-            break;
-        }
+        if (i as i64) == limit { next = Some(r.0.to_string()); break; }
         out.push(MessageOut { id: r.0, sender_id: r.1, body: r.2, created_at: r.3, read_at: r.4 });
     }
     out.reverse();
-    // tandai read utk pesan lawan (badge unread)
-    if v.status != "CANCELED" {
-        sqlx::query("UPDATE visit_messages SET read_at = UTC_TIMESTAMP() WHERE visit_id = ? AND sender_id != ? AND read_at IS NULL")
-            .bind(visit_id).bind(user.user_id)
-            .execute(pool).await.map_err(dberr)?;
-    }
+    sqlx::query("UPDATE visit_messages SET read_at = UTC_TIMESTAMP() WHERE visit_id = ? AND sender_id != ? AND read_at IS NULL")
+        .bind(visit_id).bind(user.user_id)
+        .execute(pool).await.map_err(dberr)?;
     Ok((out, next))
 }
 
@@ -604,9 +678,8 @@ pub async fn unread_count(pool: &MySqlPool, user_id: i64, visit_id: i64) -> Resu
     Ok(n)
 }
 
-// ===================== review (dua arah double-blind) =====================
+// ===================== review =====================
 
-/// Reviewer bisa santri (direction SANTRI_TO_USTADZ) atau ustadz (USTADZ_TO_SANTRI) — otomatis dari relasi visit.
 pub async fn submit_review(
     pool: &MySqlPool,
     user_id: i64,
@@ -640,7 +713,6 @@ pub async fn submit_review(
         }
         return Err(dberr(e));
     }
-    // reveal bila kedua arah sudah submit
     let both: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM visit_reviews WHERE visit_id = ?")
         .bind(visit_id).fetch_one(pool).await.map_err(dberr)?;
     if both >= 2 {
@@ -662,11 +734,9 @@ pub async fn review_status(pool: &MySqlPool, user_id: i64, visit_id: i64) -> Res
     }
     let mine: Option<(i8, Option<String>, i8)> = sqlx::query_as(
         "SELECT rating, comment, revealed_at IS NOT NULL FROM visit_reviews WHERE visit_id = ? AND reviewer_id = ?")
-        .bind(visit_id).bind(user_id)
-        .fetch_optional(pool).await.map_err(dberr)?;
+        .bind(visit_id).bind(user_id).fetch_optional(pool).await.map_err(dberr)?;
     let counterpart: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM visit_reviews WHERE visit_id = ? AND reviewer_id != ?")
-        .bind(visit_id).bind(user_id)
-        .fetch_one(pool).await.map_err(dberr)?;
+        .bind(visit_id).bind(user_id).fetch_one(pool).await.map_err(dberr)?;
     Ok(ReviewStatusOut {
         can_review: v.status == "COMPLETED" && mine.is_none(),
         my_rating: mine.as_ref().map(|m| m.0),
@@ -676,7 +746,6 @@ pub async fn review_status(pool: &MySqlPool, user_id: i64, visit_id: i64) -> Res
     })
 }
 
-/// Publik ke santri: review SANTRI→USTADZ (revealed & !hidden) — layar pilih ustadz.
 pub async fn ustadz_public_reviews(pool: &MySqlPool, ustadz_id: i64, limit: i64, cursor: Option<i64>) -> Result<(Vec<ReviewPublicOut>, Option<String>), AppError> {
     let rows: Vec<(i64, Option<String>, i8, Option<String>, String)> = sqlx::query_as(
         "SELECT vr.id, COALESCE(NULLIF(up.full_name,''),'Santri'), vr.rating, vr.comment, DATE_FORMAT(vr.created_at, '%Y-%m-%dT%H:%i:%sZ') \
@@ -691,22 +760,16 @@ pub async fn ustadz_public_reviews(pool: &MySqlPool, ustadz_id: i64, limit: i64,
     let mut out = Vec::new();
     let mut next = None;
     for (i, r) in rows.into_iter().enumerate() {
-        if (i as i64) == limit {
-            next = Some(r.0.to_string());
-            break;
-        }
+        if (i as i64) == limit { next = Some(r.0.to_string()); break; }
         out.push(ReviewPublicOut {
             id: r.0,
             reviewer_first_name: r.1.unwrap_or_else(|| "Santri".into()).split(' ').next().unwrap_or("Santri").to_string(),
-            rating: r.2,
-            comment: r.3,
-            created_at: r.4,
+            rating: r.2, comment: r.3, created_at: r.4,
         });
     }
     Ok((out, next))
 }
 
-/// Khusus ustadz pemegang request: review USTADZ→SANTRI tentang santri pemesan.
 pub async fn requester_reviews(
     pool: &MySqlPool,
     ustadz_user_id: i64,
@@ -730,16 +793,11 @@ pub async fn requester_reviews(
     let mut out = Vec::new();
     let mut next = None;
     for (i, r) in rows.into_iter().enumerate() {
-        if (i as i64) == limit {
-            next = Some(r.0.to_string());
-            break;
-        }
+        if (i as i64) == limit { next = Some(r.0.to_string()); break; }
         out.push(ReviewPublicOut {
             id: r.0,
             reviewer_first_name: r.1.unwrap_or_else(|| "Ustadz".into()).split(' ').next().unwrap_or("Ustadz").to_string(),
-            rating: r.2,
-            comment: r.3,
-            created_at: r.4,
+            rating: r.2, comment: r.3, created_at: r.4,
         });
     }
     Ok((out, next))
@@ -759,15 +817,15 @@ pub async fn put_my_location(state: &AppState, user_id: i64, lat: f64, lng: f64,
     Ok(())
 }
 
-// ===================== ustadz side =====================
+// ===================== ustadz =====================
 
 pub async fn get_visit_settings(pool: &MySqlPool, ustadz_id: i64) -> Result<VisitSettingsOut, AppError> {
-    let row: Option<(i8, i64)> = sqlx::query_as(
-        "SELECT is_accepting, max_active_visits FROM ustadz_visit_settings WHERE ustadz_id = ?")
+    let row: Option<(i8, i64, i64)> = sqlx::query_as(
+        "SELECT is_accepting, max_active_visits, price_per_hour FROM ustadz_visit_settings WHERE ustadz_id = ?")
         .bind(ustadz_id).fetch_optional(pool).await.map_err(dberr)?;
     Ok(match row {
-        Some((a, m)) => VisitSettingsOut { is_accepting: a != 0, max_active_visits: m },
-        None => VisitSettingsOut { is_accepting: false, max_active_visits: 2 },
+        Some((a, m, p)) => VisitSettingsOut { is_accepting: a != 0, max_active_visits: m, price_per_hour: p },
+        None => VisitSettingsOut { is_accepting: false, max_active_visits: 2, price_per_hour: MIN_TARIF_PER_JAM },
     })
 }
 
@@ -775,82 +833,35 @@ pub async fn put_visit_settings(pool: &MySqlPool, ustadz_id: i64, req: VisitSett
     if !(1..=10).contains(&req.max_active_visits) {
         return Err(AppError::Unprocessable("max_active_visits 1-10".into()));
     }
-    sqlx::query(
-        "INSERT INTO ustadz_visit_settings (ustadz_id, is_accepting, max_active_visits) VALUES (?, ?, ?) AS new \
-         ON DUPLICATE KEY UPDATE is_accepting = new.is_accepting, max_active_visits = new.max_active_visits")
-        .bind(ustadz_id).bind(req.is_accepting as i8).bind(req.max_active_visits)
-        .execute(pool).await.map_err(dberr)?;
-    Ok(VisitSettingsOut { is_accepting: req.is_accepting, max_active_visits: req.max_active_visits })
-}
-
-pub async fn list_tarif(pool: &MySqlPool, ustadz_id: i64) -> Result<Vec<TarifOut>, AppError> {
-    let rows: Vec<(i64, String, i64, i64)> = sqlx::query_as(
-        "SELECT uvsr.service_type_id, vst.name, uvsr.price_amount, uvsr.duration_minutes \
-         FROM ustadz_visit_services uvsr JOIN visit_service_types vst ON vst.id = uvsr.service_type_id \
-         WHERE uvsr.ustadz_id = ? ORDER BY vst.sort_order")
-        .bind(ustadz_id).fetch_all(pool).await.map_err(dberr)?;
-    Ok(rows.into_iter().map(|r| TarifOut {
-        service_type_id: r.0, service_type_name: r.1, price_amount: r.2, duration_minutes: r.3,
-    }).collect())
-}
-
-pub async fn upsert_tarif(pool: &MySqlPool, ustadz_id: i64, req: TarifUpsertReq) -> Result<(), AppError> {
-    if req.price_amount < MIN_TARIF || req.price_amount > 100_000_000 {
-        return Err(AppError::Unprocessable(format!("tarif Rp {MIN_TARIF} - Rp 100.000.000 (tidak ada booking gratis)")));
-    }
-    if !(15..=600).contains(&req.duration_minutes) {
-        return Err(AppError::Unprocessable("durasi 15-600 menit".into()));
-    }
-    let known: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM visit_service_types WHERE id = ? AND active = 1")
-        .bind(req.service_type_id).fetch_one(pool).await.map_err(dberr)?;
-    if known == 0 {
-        return Err(AppError::Unprocessable("jenis layanan tidak dikenal".into()));
+    if req.price_per_hour < MIN_TARIF_PER_JAM || req.price_per_hour > 100_000_000 {
+        return Err(AppError::Unprocessable(format!("tarif per jam Rp {MIN_TARIF_PER_JAM} - Rp 100.000.000")));
     }
     sqlx::query(
-        "INSERT INTO ustadz_visit_services (ustadz_id, service_type_id, price_amount, duration_minutes, note, active) \
-         VALUES (?, ?, ?, ?, ?, 1) AS new \
-         ON DUPLICATE KEY UPDATE price_amount = new.price_amount, duration_minutes = new.duration_minutes, note = new.note, active = 1")
-        .bind(ustadz_id).bind(req.service_type_id).bind(req.price_amount).bind(req.duration_minutes)
-        .bind(req.note.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+        "INSERT INTO ustadz_visit_settings (ustadz_id, is_accepting, max_active_visits, price_per_hour) \
+         VALUES (?, ?, ?, ?) AS new \
+         ON DUPLICATE KEY UPDATE is_accepting = new.is_accepting, max_active_visits = new.max_active_visits, price_per_hour = new.price_per_hour")
+        .bind(ustadz_id).bind(req.is_accepting as i8).bind(req.max_active_visits).bind(req.price_per_hour)
         .execute(pool).await.map_err(dberr)?;
-    Ok(())
-}
-
-pub async fn delete_tarif(pool: &MySqlPool, ustadz_id: i64, service_type_id: i64) -> Result<(), AppError> {
-    let n = sqlx::query("DELETE FROM ustadz_visit_services WHERE ustadz_id = ? AND service_type_id = ?")
-        .bind(ustadz_id).bind(service_type_id)
-        .execute(pool).await.map_err(dberr)?.rows_affected();
-    if n == 0 {
-        return Err(AppError::NotFound("tarif tidak ada".into()));
-    }
-    Ok(())
-}
-
-fn requester_agg(sub_direction: &'static str) -> String {
-    format!(
-        "(SELECT CAST(AVG(vr.rating) AS DOUBLE) FROM visit_reviews vr WHERE vr.reviewee_id = {{uid}} AND vr.direction = '{sub_direction}' AND vr.revealed_at IS NOT NULL AND vr.hidden = 0), \
-         (SELECT COUNT(*) FROM visit_reviews vr2 WHERE vr2.reviewee_id = {{uid}} AND vr2.direction = '{sub_direction}' AND vr2.revealed_at IS NOT NULL AND vr2.hidden = 0)")
+    Ok(VisitSettingsOut { is_accepting: req.is_accepting, max_active_visits: req.max_active_visits, price_per_hour: req.price_per_hour })
 }
 
 pub async fn my_visits(pool: &MySqlPool, ustadz_id: i64) -> Result<MyVisitsOut, AppError> {
-    // incoming: WAITING_CONFIRM + requester profile + rating agregat santri
-    let agg = requester_agg("USTADZ_TO_SANTRI").replace("{uid}", "v.user_id");
-    let sql_in = format!(
-        "SELECT v.id, v.status, vst.name, DATE_FORMAT(v.scheduled_at, '%Y-%m-%dT%H:%i:%sZ'), v.duration_minutes, v.price_amount, v.note, \
-         v.user_id, COALESCE(NULLIF(up.full_name,''),'Santri'), {agg} \
+    let rows: Vec<(i64, String, String, i64, i64, Option<String>, String, i64, String, Option<f64>, i64)> = sqlx::query_as(
+        "SELECT v.id, v.status, DATE_FORMAT(v.scheduled_at, '%Y-%m-%dT%H:%i:%sZ'), v.duration_hours, v.price_total, v.note, \
+         v.address_label, v.user_id, COALESCE(NULLIF(up.full_name,''),'Santri'), \
+         (SELECT CAST(AVG(vr.rating) AS DOUBLE) FROM visit_reviews vr WHERE vr.reviewee_id = v.user_id \
+            AND vr.direction = 'USTADZ_TO_SANTRI' AND vr.revealed_at IS NOT NULL AND vr.hidden = 0), \
+         (SELECT COUNT(*) FROM visit_reviews vr2 WHERE vr2.reviewee_id = v.user_id \
+            AND vr2.direction = 'USTADZ_TO_SANTRI' AND vr2.revealed_at IS NOT NULL AND vr2.hidden = 0) \
          FROM ustadz_visits v \
-         JOIN visit_service_types vst ON vst.id = v.service_type_id \
-         JOIN users u ON u.id = v.user_id \
          LEFT JOIN user_profiles up ON up.user_id = v.user_id \
-         WHERE v.ustadz_id = ? AND v.status = 'WAITING_CONFIRM' ORDER BY v.scheduled_at ASC LIMIT 50");
-    let rows: Vec<(i64, String, String, String, i64, i64, Option<String>, i64, String, Option<f64>, i64)> =
-        sqlx::query_as(&sql_in).bind(ustadz_id).fetch_all(pool).await.map_err(dberr)?;
+         WHERE v.ustadz_id = ? AND v.status = 'WAITING_CONFIRM' ORDER BY v.scheduled_at ASC LIMIT 50")
+        .bind(ustadz_id).fetch_all(pool).await.map_err(dberr)?;
     let incoming = rows.into_iter().map(|r| IncomingVisitOut {
-        id: r.0, status: r.1, service_name: r.2, scheduled_at: r.3, duration_minutes: r.4,
-        price_amount: r.5, note: r.6,
+        id: r.0, status: r.1, scheduled_at: r.2, duration_hours: r.3, price_total: r.4,
+        note: r.5, address_label: r.6,
         requester: RequesterOut { user_id: r.7, full_name: r.8, rating_avg: r.9, rating_count: r.10 },
     }).collect();
-    // upcoming: CONFIRMED
     let rows2: Vec<(i64,)> = sqlx::query_as(
         "SELECT id FROM ustadz_visits WHERE ustadz_id = ? AND status = 'CONFIRMED' ORDER BY scheduled_at ASC LIMIT 50")
         .bind(ustadz_id).fetch_all(pool).await.map_err(dberr)?;
@@ -865,12 +876,9 @@ pub async fn my_visits(pool: &MySqlPool, ustadz_id: i64) -> Result<MyVisitsOut, 
 
 pub async fn confirm_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64) -> Result<VisitOut, AppError> {
     let mut tx = state.pool.begin().await.map_err(dberr)?;
-    // lock serialisasi per ustadz (plan rev 5): FOR UPDATE pada row settings
-    let settings: Option<(i8, i64)> = sqlx::query_as(
-        "SELECT is_accepting, max_active_visits FROM ustadz_visit_settings WHERE ustadz_id = ? FOR UPDATE")
+    sqlx::query("SELECT ustadz_id FROM ustadz_visit_settings WHERE ustadz_id = ? FOR UPDATE")
         .bind(ustadz_user_id)
         .fetch_optional(&mut *tx).await.map_err(dberr)?;
-    let (_, max_active) = settings.ok_or_else(|| AppError::Forbidden("aktifkan dulu pengaturan kunjungan (accepting)".into()))?;
     let v = fetch_visit_tx(&mut tx, visit_id).await?.ok_or_else(|| AppError::NotFound("pesanan tidak ada".into()))?;
     if v.ustadz_id != ustadz_user_id {
         return Err(AppError::NotFound("pesanan tidak ada".into()));
@@ -878,21 +886,15 @@ pub async fn confirm_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64)
     if v.status != "WAITING_CONFIRM" {
         return Err(AppError::Conflict(format!("status {}, harus WAITING_CONFIRM", v.status)));
     }
-    // kapasitas aktif
-    let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ustadz_visits WHERE ustadz_id = ? AND status = 'CONFIRMED'")
-        .bind(ustadz_user_id).fetch_one(&mut *tx).await.map_err(dberr)?;
-    if active >= max_active {
-        return Err(AppError::Conflict("ustadz_active_limit: kapasitas kunjungan aktif penuh".into()));
-    }
-    // overlap: interval CONFIRMED beririsan dgn [sched, sched+dur)
     let overlap: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM ustadz_visits WHERE ustadz_id = ? AND status = 'CONFIRMED' AND id != ? \
          AND scheduled_at < DATE_ADD(?, INTERVAL ? MINUTE) \
          AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > ?")
-        .bind(ustadz_user_id).bind(visit_id).bind(&v.scheduled_at).bind(v.duration).bind(&v.scheduled_at)
+        .bind(ustadz_user_id).bind(visit_id).bind(&v.scheduled_at).bind(v.duration_hours).bind(&v.scheduled_at)
         .fetch_one(&mut *tx).await.map_err(dberr)?;
     if overlap > 0 {
-        return Err(AppError::Conflict("ustadz_schedule_conflict: bentrok jadwal dengan kunjungan lain".into()));
+        tx.rollback().await.map_err(dberr)?;
+        return Err(AppError::Conflict("ustadz_schedule_conflict: bentrok jadwal dgn kunjungan lain".into()));
     }
     let n = sqlx::query("UPDATE ustadz_visits SET status = 'CONFIRMED', confirmed_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'WAITING_CONFIRM'")
         .bind(visit_id).execute(&mut *tx).await.map_err(dberr)?.rows_affected();
@@ -900,35 +902,13 @@ pub async fn confirm_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64)
         return Err(AppError::Conflict("pesanan sudah tidak menunggu konfirmasi".into()));
     }
     log_history(&mut *tx, visit_id, Some("WAITING_CONFIRM"), "CONFIRMED", Some(ustadz_user_id), "ustadz mengonfirmasi").await?;
-    notify(&mut *tx, v.user_id, "VISIT_CONFIRMED", "Kunjungan dikonfirmasi",
+    notify(&mut *tx, v.user_id, "KHATMIL_ASSIGN_RESULT", "Kunjungan dikonfirmasi",
         &format!("Ustadz telah MENGONFIRMASI kunjungan {}. Kontak & chat kini terbuka.", v.scheduled_at), &visit_id.to_string()).await?;
     tx.commit().await.map_err(dberr)?;
     let v2 = fetch_visit(&state.pool, visit_id).await?.unwrap();
     Ok(visit_out(&state.pool, &v2, Some(ustadz_user_id)).await?)
 }
 
-async fn fetch_visit_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
-    id: i64,
-) -> Result<Option<VisitRow>, AppError> {
-    let a: Option<(i64, i64, i64, i64, String, String, i64, f64, f64, String, Option<String>, i64, i8, String)> = sqlx::query_as(
-        "SELECT v.id, v.user_id, v.ustadz_id, v.service_type_id, vst.name, DATE_FORMAT(v.scheduled_at, '%Y-%m-%dT%H:%i:%sZ'), v.duration_minutes,          CAST(v.lat AS DOUBLE), CAST(v.lng AS DOUBLE), v.address_label, v.note, v.price_amount, v.anonymized, v.status          FROM ustadz_visits v JOIN visit_service_types vst ON vst.id = v.service_type_id WHERE v.id = ? FOR UPDATE")
-        .bind(id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(dberr)?;
-    let a = match a { Some(a) => a, None => return Ok(None) };
-    let b: (Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT cancel_reason, decline_reason, DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(paid_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(confirmed_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(completed_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(canceled_at, '%Y-%m-%dT%H:%i:%sZ') FROM ustadz_visits WHERE id = ? FOR UPDATE")
-        .bind(id)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(dberr)?;
-    Ok(Some(map_visit_row((
-        a.0, a.1, a.2, a.3, a.4, a.5, a.6, a.7, a.8, a.9, a.10, a.11, a.12, a.13,
-        b.0, b.1, b.2, b.3, b.4, b.5, b.6,
-    ))))
-}
 
 pub async fn decline_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64, reason: &str) -> Result<VisitOut, AppError> {
     let v = fetch_visit(&state.pool, visit_id).await?.ok_or_else(|| AppError::NotFound("pesanan tidak ada".into()))?;
@@ -943,11 +923,11 @@ pub async fn decline_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64,
     sqlx::query("UPDATE ustadz_visits SET status = 'DECLINED', declined_at = UTC_TIMESTAMP(), decline_reason = ? WHERE id = ? AND status = 'WAITING_CONFIRM'")
         .bind(if reason.is_empty() { "—" } else { reason }).bind(visit_id)
         .execute(&mut *tx).await.map_err(dberr)?;
-    log_history(&mut *tx, visit_id, Some("WAITING_CONFIRM"), "DECLINED", Some(ustadz_user_id), "ustadz menolak — refund penuh").await?;
+    log_history(&mut *tx, visit_id, Some("WAITING_CONFIRM"), "DECLINED", Some(ustadz_user_id), "ustadz menolak — refund ke saldo santri").await?;
     tx.commit().await.map_err(dberr)?;
-    crate::modules::visits::payments::attempt_refund(state, visit_id, "ustadz menolak").await?;
-    notify(&state.pool, v.user_id, "VISIT_DECLINED_REFUNDED", "Permintaan ditolak ustadz",
-        &format!("Ustadz menolak kunjungan {}. Dana PENUH dikembalikan ke metode pembayaran Anda.", v.scheduled_at), &visit_id.to_string()).await?;
+    payments::refund_visit_to_deposit(state, visit_id, "ustadz menolak").await?;
+    notify(&state.pool, v.user_id, "KHATMIL_ASSIGN_RESULT", "Permintaan ditolak ustadz",
+        &format!("Ustadz menolak kunjungan {}. Dana PENUH dikembalikan ke saldo Anda.", v.scheduled_at), &visit_id.to_string()).await?;
     let v2 = fetch_visit(&state.pool, visit_id).await?.unwrap();
     Ok(visit_out(&state.pool, &v2, Some(ustadz_user_id)).await?)
 }
@@ -973,11 +953,13 @@ pub async fn complete_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64
     sqlx::query("UPDATE ustadz_visits SET status = 'COMPLETED', completed_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'CONFIRMED'")
         .bind(visit_id).execute(&mut *tx).await.map_err(dberr)?;
     log_history(&mut *tx, visit_id, Some("CONFIRMED"), "COMPLETED", Some(ustadz_user_id), "kunjungan selesai").await?;
-    notify(&mut *tx, v.user_id, "VISIT_COMPLETED_PLEASE_REVIEW", "Kunjungan selesai",
-        &format!("Alhamdulillah, kunjungan {} selesai. Beri rating & catatan untuk ustadz Anda.", v.scheduled_at), &visit_id.to_string()).await?;
-    notify(&mut *tx, ustadz_user_id, "VISIT_REVIEW_USTADZ_PENDING", "Nilai santri Anda",
-        &format!("Kunjungan {} sudah selesai. Beri rating & catatan untuk santri Anda (privat, double-blind).", v.scheduled_at), &visit_id.to_string()).await?;
+    notify(&mut *tx, v.user_id, "KHATMIL_ASSIGN_RESULT", "Kunjungan selesai",
+        &format!("Alhamdulillah, kunjungan {} selesai. Beri rating untuk ustadz Anda.", v.scheduled_at), &visit_id.to_string()).await?;
+    notify(&mut *tx, ustadz_user_id, "KHATMIL_ASSIGN_RESULT", "Nilai santri Anda",
+        &format!("Kunjungan {} selesai. Beri rating & catatan utk santri (privat).", v.scheduled_at), &visit_id.to_string()).await?;
     tx.commit().await.map_err(dberr)?;
+    // penghasilan ustadz masuk saldo otomatis
+    payments::earn_visit_income(state, visit_id, v.ustadz_id).await?;
     let v2 = fetch_visit(&state.pool, visit_id).await?.unwrap();
     Ok(visit_out(&state.pool, &v2, Some(ustadz_user_id)).await?)
 }
@@ -997,10 +979,7 @@ pub async fn admin_list_visits(pool: &MySqlPool, f: &AdminVisitFilter, limit: i6
     let mut out = Vec::new();
     let mut next = None;
     for (i, (id,)) in rows.into_iter().enumerate() {
-        if (i as i64) == limit {
-            next = Some(id.to_string());
-            break;
-        }
+        if (i as i64) == limit { next = Some(id.to_string()); break; }
         if let Some(v) = fetch_visit(pool, id).await? {
             out.push(visit_out(pool, &v, None).await?);
         }
@@ -1008,22 +987,23 @@ pub async fn admin_list_visits(pool: &MySqlPool, f: &AdminVisitFilter, limit: i6
     Ok((out, next))
 }
 
-pub async fn admin_force_complete(pool: &MySqlPool, admin_id: i64, visit_id: i64) -> Result<VisitOut, AppError> {
-    let v = fetch_visit(pool, visit_id).await?.ok_or_else(|| AppError::NotFound("pesanan tidak ada".into()))?;
+pub async fn admin_force_complete(state: &AppState, admin_id: i64, visit_id: i64) -> Result<VisitOut, AppError> {
+    let v = fetch_visit(&state.pool, visit_id).await?.ok_or_else(|| AppError::NotFound("pesanan tidak ada".into()))?;
     if !matches!(v.status.as_str(), "CONFIRMED" | "COMPLETED" | "REVIEWED") {
         return Err(AppError::Unprocessable(format!("status {} tidak bisa dipaksa selesai", v.status)));
     }
     if v.status == "CONFIRMED" {
-        let mut tx = pool.begin().await.map_err(dberr)?;
+        let mut tx = state.pool.begin().await.map_err(dberr)?;
         sqlx::query("UPDATE ustadz_visits SET status = 'COMPLETED', completed_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'CONFIRMED'")
             .bind(visit_id).execute(&mut *tx).await.map_err(dberr)?;
         log_history(&mut *tx, visit_id, Some("CONFIRMED"), "COMPLETED", Some(admin_id), "ADMIN force-complete").await?;
-        notify(&mut *tx, v.user_id, "VISIT_COMPLETED_PLEASE_REVIEW", "Kunjungan selesai (admin)",
-            &format!("Kunjungan {} ditandai selesai oleh admin. Beri rating untuk ustadz Anda.", v.scheduled_at), &visit_id.to_string()).await?;
+        notify(&mut *tx, v.user_id, "KHATMIL_ASSIGN_RESULT", "Kunjungan selesai (admin)",
+            &format!("Kunjungan {} ditandai selesai oleh admin.", v.scheduled_at), &visit_id.to_string()).await?;
         tx.commit().await.map_err(dberr)?;
+        payments::earn_visit_income(state, visit_id, v.ustadz_id).await?;
     }
-    let v2 = fetch_visit(pool, visit_id).await?.unwrap();
-    Ok(visit_out(pool, &v2, None).await?)
+    let v2 = fetch_visit(&state.pool, visit_id).await?.unwrap();
+    Ok(visit_out(&state.pool, &v2, None).await?)
 }
 
 pub async fn admin_force_cancel(state: &AppState, admin_id: i64, visit_id: i64, req: ForceCancelReq) -> Result<VisitOut, AppError> {
@@ -1039,7 +1019,7 @@ pub async fn admin_force_cancel(state: &AppState, admin_id: i64, visit_id: i64, 
     log_history(&mut *tx, visit_id, Some(v.status.as_str()), "CANCELED", Some(admin_id), "ADMIN force-cancel").await?;
     tx.commit().await.map_err(dberr)?;
     if paid && req.force_refund {
-        crate::modules::visits::payments::attempt_refund(state, visit_id, "admin force-cancel").await?;
+        payments::refund_visit_to_deposit(state, visit_id, "admin force-cancel").await?;
     }
     let v2 = fetch_visit(&state.pool, visit_id).await?.unwrap();
     Ok(visit_out(&state.pool, &v2, None).await?)
@@ -1047,21 +1027,19 @@ pub async fn admin_force_cancel(state: &AppState, admin_id: i64, visit_id: i64, 
 
 pub async fn admin_list_reviews(pool: &MySqlPool, direction: Option<&str>, limit: i64, cursor: Option<i64>) -> Result<(Vec<serde_json::Value>, Option<String>), AppError> {
     let rows: Vec<(i64, String, i64, i64, i8, Option<String>, i8, i8, String)> = sqlx::query_as(
-        "SELECT vr.id, vr.direction, vr.reviewer_id, vr.reviewee_id, vr.rating, vr.comment, vr.hidden, vr.revealed_at IS NOT NULL, DATE_FORMAT(vr.created_at, '%Y-%m-%dT%H:%i:%sZ') \
+        "SELECT vr.id, vr.direction, vr.reviewer_id, vr.reviewee_id, vr.rating, vr.comment, vr.hidden, vr.revealed_at IS NOT NULL, \
+         DATE_FORMAT(vr.created_at, '%Y-%m-%dT%H:%i:%sZ') \
          FROM visit_reviews vr WHERE (? IS NULL OR vr.direction = ?) AND (? IS NULL OR vr.id < ?) ORDER BY vr.id DESC LIMIT ?")
         .bind(direction).bind(direction).bind(cursor).bind(cursor).bind(limit + 1)
         .fetch_all(pool).await.map_err(dberr)?;
     let mut out = Vec::new();
     let mut next = None;
     for (i, r) in rows.into_iter().enumerate() {
-        if (i as i64) == limit {
-            next = Some(r.0.to_string());
-            break;
-        }
+        if (i as i64) == limit { next = Some(r.0.to_string()); break; }
         out.push(serde_json::json!({
             "id": r.0, "direction": r.1, "reviewer_id": r.2, "reviewee_id": r.3,
-            "rating": r.4, "comment": r.5, "hidden": r.6 != 0,
-            "revealed": r.7 != 0, "created_at": r.8,
+            "rating": r.4, "comment": r.5, "hidden": r.6 != 0, "revealed": r.7 != 0,
+            "created_at": r.8,
         }));
     }
     Ok((out, next))
@@ -1071,8 +1049,6 @@ pub async fn admin_set_review_hidden(pool: &MySqlPool, review_id: i64, hidden: b
     let n = sqlx::query("UPDATE visit_reviews SET hidden = ? WHERE id = ?")
         .bind(hidden as i8).bind(review_id)
         .execute(pool).await.map_err(dberr)?.rows_affected();
-    if n == 0 {
-        return Err(AppError::NotFound("review tidak ada".into()));
-    }
+    if n == 0 { return Err(AppError::NotFound("review tidak ada".into())); }
     Ok(())
 }

@@ -1,28 +1,14 @@
-//! DTO modul visits (Bagian V — Pesan Ustadz).
+//! DTO modul visits v2 (Panggil Ustadz — alur baru: ketersediaan + deposit).
 use serde::{Deserialize, Serialize};
 
-fn ts(d: chrono::NaiveDateTime) -> String {
+pub fn ts(d: chrono::NaiveDateTime) -> String {
     d.format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
-
-// ---------- layanan ----------
-#[derive(Serialize)]
-pub struct ServiceTypeOut {
-    pub id: i64,
-    pub code: String,
-    pub name: String,
-    pub description: Option<String>,
+pub fn ts_o(d: &Option<chrono::NaiveDateTime>) -> Option<String> {
+    d.as_ref().map(|x| ts(*x))
 }
 
 // ---------- nearby ----------
-#[derive(Serialize, Clone)]
-pub struct TarifOut {
-    pub service_type_id: i64,
-    pub service_type_name: String,
-    pub price_amount: i64,
-    pub duration_minutes: i64,
-}
-
 #[derive(Serialize)]
 pub struct NearbyUstadz {
     pub ustadz_id: i64,
@@ -30,16 +16,35 @@ pub struct NearbyUstadz {
     pub distance_km: f64,
     pub rating_avg: Option<f64>,
     pub rating_count: i64,
-    pub services: Vec<TarifOut>,
+    pub price_per_hour: i64,
+}
+
+// ---------- slots ----------
+#[derive(Deserialize)]
+pub struct SlotsReq {
+    pub ustadz_id: i64,
+    /// YYYY-MM-DD (WIB)
+    pub date: String,
+    pub hours: i64,
+}
+
+#[derive(Serialize)]
+pub struct SlotsOut {
+    pub date: String,
+    pub hours: i64,
+    /// jam mulai yang bisa dipilih (WIB, "HH:MM")
+    pub slots: Vec<String>,
 }
 
 // ---------- booking ----------
 #[derive(Deserialize)]
 pub struct CreateVisitReq {
     pub ustadz_id: i64,
-    pub service_type_id: i64,
-    /// ISO UTC: 2026-09-20T14:00:00Z
-    pub scheduled_at: String,
+    /// YYYY-MM-DD (WIB)
+    pub date: String,
+    /// "HH:MM" (WIB) — wajib dari daftar /visits/slots
+    pub start_time: String,
+    pub duration_hours: i64,
     pub lat: f64,
     pub lng: f64,
     pub accuracy_m: Option<i16>,
@@ -70,14 +75,12 @@ pub struct PartyOut {
 pub struct VisitOut {
     pub id: i64,
     pub status: String,
-    pub service_type_id: i64,
-    pub service_name: String,
     pub scheduled_at: String,
-    pub duration_minutes: i64,
+    pub duration_hours: i64,
+    pub price_per_hour: i64,
+    pub price_total: i64,
     pub address_label: String,
     pub note: Option<String>,
-    pub price_amount: i64,
-    /// pemilik lokasi (santri) — koordinat hanya utk peserta; dianonymize -> (0,0)
     pub lat: Option<f64>,
     pub lng: Option<f64>,
     pub anonymized: bool,
@@ -97,28 +100,49 @@ pub struct VisitOut {
 pub struct VisitCreatedOut {
     pub visit: VisitOut,
     pub invoice_url: Option<String>,
-    /// true = idempotency replay (booking lama dikembalikan)
     pub replay: bool,
 }
 
-// ---------- settings & tarif ustadz ----------
+// ---------- settings ustadz ----------
 #[derive(Serialize)]
 pub struct VisitSettingsOut {
     pub is_accepting: bool,
     pub max_active_visits: i64,
+    pub price_per_hour: i64,
 }
 
 #[derive(Deserialize)]
 pub struct VisitSettingsReq {
     pub is_accepting: bool,
     pub max_active_visits: i64,
+    pub price_per_hour: i64,
+}
+
+// ---------- slots ketersediaan ----------
+#[derive(Deserialize)]
+pub struct SlotUpsertReq {
+    pub weekday: i8, // 0=Minggu .. 6=Sabtu
+    pub start_minute: i16,
+    pub end_minute: i16,
+}
+
+#[derive(Serialize)]
+pub struct SlotOut {
+    pub id: i64,
+    pub weekday: i8,
+    pub start_minute: i64,
+    pub end_minute: i64,
 }
 
 #[derive(Deserialize)]
-pub struct TarifUpsertReq {
-    pub service_type_id: i64,
-    pub price_amount: i64,
-    pub duration_minutes: i64,
+pub struct BlackoutReq {
+    pub off_date: String, // YYYY-MM-DD
+    pub note: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct BlackoutOut {
+    pub off_date: String,
     pub note: Option<String>,
 }
 
@@ -135,11 +159,6 @@ pub struct MessageOut {
     pub body: String,
     pub created_at: String,
     pub read_at: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct UnreadOut {
-    pub unread: i64,
 }
 
 // ---------- review ----------
@@ -175,7 +194,7 @@ pub struct PutLocationReq {
     pub accuracy_m: Option<i16>,
 }
 
-// ---------- ustadz visits list ----------
+// ---------- ustadz permintaan masuk ----------
 #[derive(Serialize)]
 pub struct RequesterOut {
     pub user_id: i64,
@@ -188,11 +207,11 @@ pub struct RequesterOut {
 pub struct IncomingVisitOut {
     pub id: i64,
     pub status: String,
-    pub service_name: String,
     pub scheduled_at: String,
-    pub duration_minutes: i64,
-    pub price_amount: i64,
+    pub duration_hours: i64,
+    pub price_total: i64,
     pub note: Option<String>,
+    pub address_label: String,
     pub requester: RequesterOut,
 }
 
@@ -200,6 +219,51 @@ pub struct IncomingVisitOut {
 pub struct MyVisitsOut {
     pub incoming: Vec<IncomingVisitOut>,
     pub upcoming: Vec<VisitOut>,
+}
+
+// ---------- wallet ----------
+#[derive(Serialize)]
+pub struct WalletOut {
+    pub balance: i64,
+}
+
+#[derive(Deserialize)]
+pub struct TopupReq {
+    pub amount: i64,
+}
+
+#[derive(Serialize)]
+pub struct WalletTxOut {
+    pub id: i64,
+    pub tx_type: String,
+    pub amount: i64,
+    pub balance_after: i64,
+    pub subject_type: Option<String>,
+    pub subject_id: Option<i64>,
+    pub created_at: String,
+}
+
+// ---------- payout ----------
+#[derive(Deserialize)]
+pub struct PayoutCreateReq {
+    pub bank_name: String,
+    pub account_no: String,
+    pub account_name: String,
+    pub amount: i64,
+}
+
+#[derive(Serialize)]
+pub struct PayoutOut {
+    pub id: i64,
+    pub amount: i64,
+    pub fee: i64,
+    pub bank_name: String,
+    pub bank_account_no: String,
+    pub bank_account_name: String,
+    pub status: String,
+    pub rejected_reason: Option<String>,
+    pub created_at: String,
+    pub processed_at: Option<String>,
 }
 
 // ---------- admin ----------
@@ -214,7 +278,6 @@ pub struct AdminVisitFilter {
 #[derive(Deserialize)]
 pub struct ForceCancelReq {
     pub reason: String,
-    /// true = refund penuh meski di luar aturan (default false ikut aturan)
     #[serde(default)]
     pub force_refund: bool,
 }
