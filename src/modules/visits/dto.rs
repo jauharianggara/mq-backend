@@ -60,6 +60,7 @@ pub struct PaymentOut {
     pub invoice_url: Option<String>,
     pub amount: i64,
     pub refunded_amount: i64,
+    pub channel: Option<String>,
     pub expires_at: Option<String>,
     pub paid_at: Option<String>,
 }

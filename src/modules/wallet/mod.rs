@@ -20,4 +20,6 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/wallet", get(handler::admin_list_balances))
         .route("/admin/wallet/{user_id}/transactions", get(handler::admin_transactions))
         .route("/admin/wallet/{user_id}/adjustment", post(handler::admin_propose_adjustment))
+        .route("/admin/wallet-adjustments", get(handler::admin_list_adjustments))
+        .route("/admin/payments", get(handler::admin_list_payments))
 }

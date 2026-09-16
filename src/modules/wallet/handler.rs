@@ -65,12 +65,21 @@ pub async fn transactions(cu: CurrentUser, State(st): State<AppState>, Query(q):
 // ===================== admin & santri adjustments =====================
 
 #[derive(Deserialize)]
-pub struct AdjustQ { pub q: Option<String>, pub cursor: Option<i64> }
+pub struct AdjustQ {
+    pub q: Option<String>,
+    pub cursor: Option<i64>,
+    /// SANTRI (default) | USTADZ
+    pub role: Option<String>,
+}
 
 pub async fn admin_list_balances(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<AdjustQ>) -> Result<Response, AppError> {
     cu.require("visits.admin")?;
     let limit = 50;
-    let (items, next) = admin_service::list_balances(&st.pool, q.q.as_deref(), limit, q.cursor).await?;
+    let role = match q.role.as_deref() {
+        Some("USTADZ") => "USTADZ",
+        _ => "SANTRI",
+    };
+    let (items, next) = admin_service::list_balances(&st.pool, role, q.q.as_deref(), limit, q.cursor).await?;
     Ok(ok(json!({ "items": items, "meta": { "pagination": { "next_cursor": next, "has_more": next.is_some() } } }), StatusCode::OK))
 }
 
@@ -85,6 +94,83 @@ pub async fn admin_propose_adjustment(cu: CurrentUser, State(st): State<AppState
     admin_perm(&cu)?;
     let id = admin_service::propose_adjustment(&st.pool, cu.user_id, user_id, req.amount, &req.reason).await?;
     Ok(ok(json!({ "id": id, "status": "PENDING_ACC" }), StatusCode::CREATED))
+}
+
+#[derive(Deserialize)]
+pub struct AdjustListQ { pub status: Option<String>, pub cursor: Option<i64> }
+
+/// Monitoring semua penyesuaian saldo (nama santri + admin pengaju).
+pub async fn admin_list_adjustments(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<AdjustListQ>) -> Result<Response, AppError> {
+    admin_perm(&cu)?;
+    let (items, next) = admin_service::list_adjustments(&st.pool, q.status.as_deref(), 50, q.cursor).await?;
+    Ok(paged2(items, next))
+}
+
+#[derive(Deserialize)]
+pub struct PaymentsQ {
+    pub status: Option<String>,
+    /// ustadz_visit | wallet_topup
+    pub subject_type: Option<String>,
+    pub cursor: Option<i64>,
+}
+
+/// SEMUA invoice Xendit (kunjungan & top-up deposit) — visibilitas admin.
+/// Refund v2 selalu otomatis ke deposit — TIDAK ADA mark-refunded.
+pub async fn admin_list_payments(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<PaymentsQ>) -> Result<Response, AppError> {
+    admin_perm(&cu)?;
+    let rows: Vec<(i64, String, String, Option<String>, i64, String, Option<String>, String, Option<String>, Option<i64>)> = sqlx::query_as(
+        "SELECT p.id, p.external_id, p.provider, p.channel, p.amount, p.status, p.subject_type, \
+         DATE_FORMAT(p.created_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(p.paid_at, '%Y-%m-%dT%H:%i:%sZ'), p.subject_id \
+         FROM payments p \
+         WHERE (? IS NULL OR p.status = ?) AND (? IS NULL OR p.subject_type = ?) AND (? IS NULL OR p.id < ?) \
+         ORDER BY p.id DESC LIMIT 51")
+        .bind(&q.status).bind(&q.status)
+        .bind(&q.subject_type).bind(&q.subject_type)
+        .bind(q.cursor).bind(q.cursor)
+        .fetch_all(&st.pool).await.map_err(|e| {
+            tracing::error!("admin payments db: {e}");
+            AppError::Internal("db".into())
+        })?;
+    let mut items = Vec::new();
+    let mut next = None;
+    for (i, r) in rows.into_iter().enumerate() {
+        if i == 50 { next = Some(r.0.to_string()); break; }
+        // label subject: nama pihak terkait (subject_type/subject_id nullable)
+        let stype = r.6.clone().unwrap_or_default();
+        let sid = r.9.unwrap_or(0);
+        let label = match stype.as_str() {
+            "ustadz_visit" => {
+                let names: Option<(String, String)> = sqlx::query_as(
+                    "SELECT COALESCE(NULLIF(su.full_name,''),'(tanpa nama)'), COALESCE(NULLIF(uu.full_name,''),'(tanpa nama)') \
+                     FROM ustadz_visits v \
+                     LEFT JOIN user_profiles su ON su.user_id = v.user_id \
+                     LEFT JOIN user_profiles uu ON uu.user_id = v.ustadz_id \
+                     WHERE v.id = ?")
+                    .bind(sid).fetch_optional(&st.pool).await.unwrap_or(None);
+                match names {
+                    Some((s, u)) => format!("Kunjungan #{sid} — {s} → {u}"),
+                    None => format!("Kunjungan #{sid}"),
+                }
+            }
+            "wallet_topup" => {
+                let n: Option<(String,)> = sqlx::query_as(
+                    "SELECT COALESCE(NULLIF(up.full_name,''),'(tanpa nama)') FROM users u \
+                     LEFT JOIN user_profiles up ON up.user_id = u.id WHERE u.id = ?")
+                    .bind(sid).fetch_optional(&st.pool).await.unwrap_or(None);
+                match n {
+                    Some((s,)) => format!("Top-up deposit — {s}"),
+                    None => format!("Top-up deposit #{sid}"),
+                }
+            }
+            other => format!("{other} #{sid}"),
+        };
+        items.push(json!({
+            "id": r.0, "external_id": r.1, "provider": r.2, "channel": r.3,
+            "amount": r.4, "status": r.5, "subject_type": stype, "subject_id": sid,
+            "subject_label": label, "created_at": r.7, "paid_at": r.8,
+        }));
+    }
+    Ok(ok(json!({ "items": items, "meta": { "pagination": { "next_cursor": next, "has_more": next.is_some() } } }), StatusCode::OK))
 }
 
 fn admin_perm(cu: &CurrentUser) -> Result<(), AppError> {

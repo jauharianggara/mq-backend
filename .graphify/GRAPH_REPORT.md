@@ -1,25 +1,25 @@
 # Graph Report - .  (2026-09-16)
 
 ## Corpus Check
-- 128 files · ~145,107 words
+- 129 files · ~146,644 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 883 nodes · 1295 edges · 75 communities detected
+- 889 nodes · 1305 edges · 75 communities detected
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS
 - Token cost: 0 input · 0 output
-- Edge kinds: contains: 733 · calls: 375 · references: 157 · method: 26 · rationale_for: 4
+- Edge kinds: contains: 738 · calls: 380 · references: 157 · method: 26 · rationale_for: 4
 
 
 ## Input Scope
 - Requested: auto
 - Resolved: committed (source: default-auto)
-- Included files: 128 · Candidates: 386
+- Included files: 129 · Candidates: 390
 - Excluded: 0 untracked · 20996 ignored · 2 sensitive · 0 missing committed
 - Recommendation: Use --scope all or graphify.yaml inputs.corpus for a knowledge-base folder.
 
 ## Graph Freshness
-- Built from Git commit: `ab1119d`
+- Built from Git commit: `028a18c`
 - Compare this hash to `git rev-parse HEAD` before trusting freshness-sensitive graph output.
 ## God Nodes (most connected - your core abstractions)
 1. `ok()` - 39 edges
@@ -29,9 +29,9 @@
 5. `visit_out()` - 15 edges
 6. `ustadz_perm()` - 14 edges
 7. `ok()` - 12 edges
-8. `AppState` - 11 edges
-9. `ok()` - 10 edges
-10. `admin_perm()` - 10 edges
+8. `ok()` - 12 edges
+9. `AppState` - 11 edges
+10. `ok()` - 10 edges
 
 ## Surprising Connections (you probably didn't know these)
 - None detected - all connections are within the same source files.
@@ -67,24 +67,24 @@ Cohesion: 0.17
 Nodes (20): activity(), ActivityQ, admin_assign_pembina(), AssignPembinaPath, AssignPembinaReq, campaign_detail(), claim(), create_campaign() (+12 more)
 
 ### Community 7 - "Community 7"
+Cohesion: 0.18
+Nodes (20): accept_adjustment(), AdjustListQ, AdjustQ, admin_list_adjustments(), admin_list_balances(), admin_list_payments(), admin_perm(), admin_propose_adjustment() (+12 more)
+
+### Community 8 - "Community 8"
 Cohesion: 0.22
 Nodes (18): answer(), archive(), ArchiveQ, categories(), close(), create(), detail(), idem() (+10 more)
 
-### Community 8 - "Community 8"
+### Community 9 - "Community 9"
 Cohesion: 0.20
 Nodes (15): change_password(), consume_action_token(), create_action_token(), forgot_password(), get_me(), hash_password(), login(), logout_all() (+7 more)
 
-### Community 9 - "Community 9"
+### Community 10 - "Community 10"
 Cohesion: 0.22
 Nodes (17): api(), cached(), db_write(), derive_juz_of(), main(), paginate(), parse_range(), 1-141' | '7' | '1,3,5' -> list int (+9 more)
 
-### Community 10 - "Community 10"
+### Community 11 - "Community 11"
 Cohesion: 0.20
 Nodes (15): add_bookmark(), audio(), AudioQ, AyahQ, ayahs(), delete_bookmark(), get_last_read(), juz_ayahs() (+7 more)
-
-### Community 11 - "Community 11"
-Cohesion: 0.21
-Nodes (16): accept_adjustment(), AdjustQ, admin_list_balances(), admin_perm(), admin_propose_adjustment(), admin_transactions(), AdminAdjustReq, get_wallet() (+8 more)
 
 ### Community 12 - "Community 12"
 Cohesion: 0.13
@@ -166,55 +166,55 @@ Nodes (8): quran_audio_files, quran_ayahs, quran_juzs, quran_surahs, quran_trans
 Cohesion: 0.36
 Nodes (6): ensure_profile(), get_availability(), get_specializations(), put_availability(), put_specializations(), stats()
 
-### Community 33 - "Community 33"
+### Community 34 - "Community 34"
 Cohesion: 0.36
 Nodes (5): app_version(), AppVersionQ, ok(), santri_home(), ustadz_home()
 
-### Community 34 - "Community 34"
+### Community 35 - "Community 35"
 Cohesion: 0.32
 Nodes (3): CurrentUser, OptionalUser, try_current_user()
 
-### Community 35 - "Community 35"
+### Community 36 - "Community 36"
 Cohesion: 0.50
 Nodes (7): permissions, role_permissions, roles, user_devices, user_roles, user_sessions, users
 
-### Community 36 - "Community 36"
+### Community 37 - "Community 37"
 Cohesion: 0.50
 Nodes (7): bookmarks, learning_materials, media, quran_ayahs, tajwid_rules, user_reading_progress, users
 
-### Community 37 - "Community 37"
+### Community 38 - "Community 38"
 Cohesion: 0.61
 Nodes (7): khatmil_campaigns, khatmil_completions, khatmil_juz_assignments, khatmil_participants, khatmil_progress, khatmil_progress_events, users
 
-### Community 38 - "Community 38"
+### Community 39 - "Community 39"
 Cohesion: 0.43
 Nodes (7): announcements, article_categories, articles, banners, faqs, media, users
 
-### Community 39 - "Community 39"
+### Community 40 - "Community 40"
 Cohesion: 0.46
 Nodes (7): payout_requests, users, ustadz_availability_slots, ustadz_blackout_dates, ustadz_visits, wallet_transactions, wallets
 
-### Community 40 - "Community 40"
+### Community 41 - "Community 41"
 Cohesion: 0.50
 Nodes (7): permissions, role_permissions, roles, user_devices, user_roles, user_sessions, users
 
-### Community 41 - "Community 41"
+### Community 42 - "Community 42"
 Cohesion: 0.50
 Nodes (7): bookmarks, learning_materials, media, quran_ayahs, tajwid_rules, user_reading_progress, users
 
-### Community 42 - "Community 42"
+### Community 43 - "Community 43"
 Cohesion: 0.61
 Nodes (7): khatmil_campaigns, khatmil_completions, khatmil_juz_assignments, khatmil_participants, khatmil_progress, khatmil_progress_events, users
 
-### Community 43 - "Community 43"
+### Community 44 - "Community 44"
 Cohesion: 0.43
 Nodes (7): announcements, article_categories, articles, banners, faqs, media, users
 
-### Community 44 - "Community 44"
+### Community 45 - "Community 45"
 Cohesion: 0.25
 Nodes (7): CategoryOut, CreateQuestionReq, MessageOut, QuestionOut, QuestionThread, RejectReq, SendMessageReq
 
-### Community 45 - "Community 45"
+### Community 46 - "Community 46"
 Cohesion: 0.46
 Nodes (7): delete_device(), delete_me(), list_devices(), ok(), patch_me(), progress_summary(), register_device()
 
@@ -339,7 +339,7 @@ Cohesion: 1.00
 Nodes (1): payments
 
 ## Knowledge Gaps
-- **134 isolated node(s):** `faqs`, `notification_templates`, `scheduled_jobs`, `faqs`, `notification_templates` (+129 more)
+- **136 isolated node(s):** `faqs`, `notification_templates`, `scheduled_jobs`, `faqs`, `notification_templates` (+131 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **Thin community `Community 15`** (1 nodes): `AppState`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
@@ -372,7 +372,7 @@ Nodes (1): payments
 _Questions this graph is uniquely positioned to answer:_
 
 - **What connects `faqs`, `notification_templates`, `scheduled_jobs` to the rest of the system?**
-  _134 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _136 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Community 0` be split into smaller, more focused modules?**
   _Cohesion score 0.09098039215686274 - nodes in this community are weakly interconnected._
 - **Should `Community 1` be split into smaller, more focused modules?**

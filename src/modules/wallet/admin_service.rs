@@ -8,18 +8,19 @@ pub fn dberr(e: sqlx::Error) -> AppError {
     AppError::Internal(format!("db: {e}"))
 }
 
-/// Daftar saldo santri (role SANTRI) — nama + saldo.
-pub async fn list_balances(pool: &MySqlPool, q: Option<&str>, limit: i64, cursor: Option<i64>) -> Result<(Vec<serde_json::Value>, Option<String>), AppError> {
+/// Daftar saldo per role (SANTRI / USTADZ) — nama + saldo.
+pub async fn list_balances(pool: &MySqlPool, role: &str, q: Option<&str>, limit: i64, cursor: Option<i64>) -> Result<(Vec<serde_json::Value>, Option<String>), AppError> {
     let rows: Vec<(i64, String, i64)> = sqlx::query_as(
         "SELECT u.id, COALESCE(NULLIF(up.full_name,''),'(tanpa nama)'), COALESCE(w.balance, 0) \
          FROM users u \
          JOIN user_roles ur ON ur.user_id = u.id \
-         JOIN roles r ON r.id = ur.role_id AND r.code = 'SANTRI' \
+         JOIN roles r ON r.id = ur.role_id AND r.code = ? \
          LEFT JOIN user_profiles up ON up.user_id = u.id \
          LEFT JOIN wallets w ON w.user_id = u.id \
          WHERE u.status != 'DELETED' AND (? IS NULL OR up.full_name LIKE ?) \
            AND (? IS NULL OR u.id < ?) \
          ORDER BY u.id DESC LIMIT ?")
+        .bind(role)
         .bind(q).bind(q.map(|s| format!("%{s}%")))
         .bind(cursor).bind(cursor).bind(limit + 1)
         .fetch_all(pool).await.map_err(dberr)?;
@@ -142,4 +143,36 @@ pub async fn reject_adjustment(pool: &MySqlPool, user_id: i64, adjustment_id: i6
         return Err(AppError::NotFound("penyesuaian tidak ditemukan / sudah diproses".into()));
     }
     Ok(())
+}
+
+/// Monitoring semua penyesuaian (utk halaman admin Saldo) — nama user + nama admin.
+pub async fn list_adjustments(
+    pool: &MySqlPool,
+    status: Option<&str>,
+    limit: i64,
+    cursor: Option<i64>,
+) -> Result<(Vec<serde_json::Value>, Option<String>), AppError> {
+    let rows: Vec<(i64, i64, String, Option<String>, i64, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT a.id, a.user_id, COALESCE(NULLIF(up.full_name,''),'(tanpa nama)'), \
+         aa.email, a.amount, a.reason, a.status, \
+         DATE_FORMAT(a.created_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(a.handled_at, '%Y-%m-%dT%H:%i:%sZ') \
+         FROM admin_wallet_adjustments a \
+         LEFT JOIN user_profiles up ON up.user_id = a.user_id \
+         LEFT JOIN users aa ON aa.id = a.admin_id \
+         WHERE (? IS NULL OR a.status = ?) AND (? IS NULL OR a.id < ?) \
+         ORDER BY a.id DESC LIMIT ?")
+        .bind(status).bind(status)
+        .bind(cursor).bind(cursor).bind(limit + 1)
+        .fetch_all(pool).await.map_err(dberr)?;
+    let mut out = Vec::new();
+    let mut next = None;
+    for (i, r) in rows.into_iter().enumerate() {
+        if i as i64 == limit { next = Some(r.0.to_string()); break; }
+        out.push(serde_json::json!({
+            "id": r.0, "user_id": r.1, "user_name": r.2, "admin_email": r.3,
+            "amount": r.4, "reason": r.5, "status": r.6,
+            "created_at": r.7, "handled_at": r.8,
+        }));
+    }
+    Ok((out, next))
 }

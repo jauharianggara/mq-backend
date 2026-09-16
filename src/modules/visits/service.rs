@@ -174,14 +174,15 @@ pub struct PaymentRow {
     pub status: String,
     pub refunded_amount: i64,
     pub subject_id: i64,
+    pub channel: Option<String>,
 }
 
 pub async fn fetch_payment(pool: &MySqlPool, visit_id: i64) -> Result<Option<PaymentRow>, AppError> {
-    let row: Option<(i64, String, Option<String>, i64, String, i64, i64)> = sqlx::query_as(
-        "SELECT id, external_id, xendit_invoice_id, amount, status, refunded_amount, subject_id \
+    let row: Option<(i64, String, Option<String>, i64, String, i64, i64, Option<String>)> = sqlx::query_as(
+        "SELECT id, external_id, xendit_invoice_id, amount, status, refunded_amount, subject_id, channel \
          FROM payments WHERE subject_type = 'ustadz_visit' AND subject_id = ? ORDER BY id DESC LIMIT 1")
         .bind(visit_id).fetch_optional(pool).await.map_err(dberr)?;
-    Ok(row.map(|r| PaymentRow { id: r.0, external_id: r.1, invoice_id: r.2, amount: r.3, status: r.4, refunded_amount: r.5, subject_id: r.6 }))
+    Ok(row.map(|r| PaymentRow { id: r.0, external_id: r.1, invoice_id: r.2, amount: r.3, status: r.4, refunded_amount: r.5, subject_id: r.6, channel: r.7 }))
 }
 
 async fn party(pool: &MySqlPool, user_id: i64) -> PartyOut {
@@ -226,7 +227,7 @@ pub async fn visit_out(pool: &MySqlPool, v: &VisitRow, viewer: Option<i64>) -> R
         payment: payment.map(|p| PaymentOut {
             id: p.id, external_id: p.external_id, status: p.status,
             invoice_url: None, amount: p.amount, refunded_amount: p.refunded_amount,
-            expires_at: None, paid_at: None,
+            channel: p.channel, expires_at: None, paid_at: None,
         }),
         created_at: v.created_at.clone(),
         paid_at: v.paid_at.clone(),
