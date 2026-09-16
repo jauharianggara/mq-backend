@@ -88,7 +88,10 @@ pub async fn create_campaign(pool: &MySqlPool, created_by: i64, req: CampaignUps
         .bind(req.min_minutes_per_juz).bind(req.require_manual_verification)
         .bind(req.max_participants).bind(created_by)
         .execute(pool).await.map_err(dberr)?;
-    Ok(ins.last_insert_id() as i64)
+    let cid = ins.last_insert_id() as i64;
+    // khatmil v2: baris kelompok dibuat otomatis sesuai jumlah kelompok
+    let _ = crate::modules::khatmil::penugasan::ensure_groups(pool, cid).await;
+    Ok(cid)
 }
 
 fn transition_ok(from: &str, to: &str) -> bool {

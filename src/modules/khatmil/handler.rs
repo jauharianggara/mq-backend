@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::middleware::auth::CurrentUser;
 use crate::modules::khatmil::dto::*;
+use crate::modules::khatmil::penugasan;
 use crate::modules::khatmil::service as svc;
 use crate::shared::error::AppError;
 use crate::state::AppState;
@@ -87,4 +88,51 @@ pub async fn post_progress(cu: CurrentUser, State(st): State<AppState>, Path(id)
 pub async fn my_assignments(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
     cu.require("khatmil.join")?;
     Ok(ok(svc::my_assignments(&st.pool, cu.user_id).await?, StatusCode::OK))
+}
+
+// ===================== penugasan pembina (rev khatmil v2) =====================
+
+pub async fn ustadz_khatmil_overview(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
+    cu.require("khatmil.read")?;
+    Ok(ok(penugasan::overview(&st.pool, cu.user_id).await?, StatusCode::OK))
+}
+
+pub async fn ustadz_group_progress(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
+    cu.require("khatmil.read")?;
+    Ok(ok(penugasan::group_progress(&st.pool, cu.user_id, id).await?, StatusCode::OK))
+}
+
+pub async fn ustadz_accept(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
+    cu.require("khatmil.read")?;
+    penugasan::accept_group(&st.pool, cu.user_id, id).await?;
+    Ok(ok(json!({ "accepted": true }), StatusCode::OK))
+}
+
+pub async fn ustadz_reject(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
+    cu.require("khatmil.read")?;
+    penugasan::reject_group(&st.pool, cu.user_id, id).await?;
+    Ok(ok(json!({ "rejected": true }), StatusCode::OK))
+}
+
+#[derive(serde::Deserialize)]
+pub struct AssignPembinaPath {
+    pub campaign_id: i64,
+    pub group_no: i64,
+}
+
+#[derive(serde::Deserialize)]
+pub struct AssignPembinaReq { pub ustadz_id: i64 }
+
+pub async fn admin_assign_pembina(cu: CurrentUser, State(st): State<AppState>, Path(p): Path<AssignPembinaPath>, Json(req): Json<AssignPembinaReq>) -> Result<Response, AppError> {
+    cu.require("khatmil.manage")?;
+    // pastikan baris kelompok tersedia (campaign lama bisa belum punya), lalu resolve id
+    penugasan::ensure_groups(&st.pool, p.campaign_id).await?;
+    let gid: (i64,) = sqlx::query_as(
+        "SELECT id FROM khatmil_groups WHERE campaign_id = ? AND group_no = ?")
+        .bind(p.campaign_id).bind(p.group_no).fetch_one(&st.pool).await.map_err(|e| {
+            tracing::error!("db: {e}");
+            AppError::NotFound("kelompok tidak ada".into())
+        })?;
+    penugasan::admin_assign(&st.pool, cu.user_id, gid.0, req.ustadz_id).await?;
+    Ok(ok(json!({ "assigned": true, "campaign_id": p.campaign_id, "group_no": p.group_no }), StatusCode::OK))
 }
