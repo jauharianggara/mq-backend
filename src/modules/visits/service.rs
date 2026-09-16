@@ -591,33 +591,24 @@ pub async fn cancel(state: &AppState, user: &crate::middleware::auth::CurrentUse
             log_history(&mut *tx, visit_id, Some("REQUESTED"), "CANCELED", Some(user.user_id), "cancel sebelum bayar").await?;
             tx.commit().await.map_err(dberr)?;
         }
-        "WAITING_CONFIRM" | "CONFIRMED" => {
-            let free_h = setting_i64(&state.pool, "visit_cancel_free_hours", 2).await;
-            let mins_left: i64 = sqlx::query_scalar("SELECT TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), ?)")
-                .bind(&v.scheduled_at).fetch_one(&state.pool).await.map_err(dberr)?;
-            let refund_full = v.status == "WAITING_CONFIRM" || mins_left >= free_h * 60;
+        "WAITING_CONFIRM" => {
+            // Aturan 16Sep: setelah ustadz ACC (CONFIRMED) santri TIDAK bisa membatalkan.
+            // WAITING_CONFIRM (belum di-ACC) masih boleh — dana kembali penuh.
             let mut tx = state.pool.begin().await.map_err(dberr)?;
             sqlx::query("UPDATE ustadz_visits SET status = 'CANCELED', canceled_at = UTC_TIMESTAMP(), canceled_by = ?, cancel_reason = ?")
                 .bind(user.user_id)
-                .bind(if refund_full { "dibatalkan — dana dikembalikan ke saldo" } else { "dibatalkan kurang dari batas gratis — dana untuk ustadz" })
+                .bind("dibatalkan sebelum dikonfirmasi — dana dikembalikan ke saldo")
                 .execute(&mut *tx).await.map_err(dberr)?;
-            log_history(&mut *tx, visit_id, Some(v.status.as_str()), "CANCELED", Some(user.user_id),
-                if refund_full { "refund penuh ke saldo" } else { "tanpa refund (< batas gratis)" }).await?;
+            log_history(&mut *tx, visit_id, Some(v.status.as_str()), "CANCELED", Some(user.user_id), "refund penuh ke saldo (belum di-ACC)").await?;
             tx.commit().await.map_err(dberr)?;
-            if refund_full {
-                payments::refund_visit_to_deposit(state, visit_id, "santri cancel").await?;
-            } else {
-                // kompensasi ustadz langsung ke saldo penghasilannya
-                let p = fetch_payment(&state.pool, visit_id).await?;
-                if let Some(p) = p {
-                    if p.status == "PAID" {
-                        crate::modules::wallet::service::credit(&state.pool, v.ustadz_id, p.amount, "EARNING", "ustadz_visit", visit_id).await?;
-                    }
-                }
-            }
+            payments::refund_visit_to_deposit(state, visit_id, "santri cancel").await?;
             let v2 = fetch_visit(&state.pool, visit_id).await?.unwrap();
             notify(&state.pool, v2.ustadz_id, "VISIT_CANCELED", "Kunjungan dibatalkan",
-                &format!("Kunjungan {} dibatalkan oleh santri.", v2.scheduled_at), &visit_id.to_string()).await?;
+                &format!("Kunjungan {} dibatalkan oleh santri (sebelum konfirmasi).", v2.scheduled_at), &visit_id.to_string()).await?;
+        }
+        "CONFIRMED" => {
+            return Err(AppError::Conflict(
+                "Kunjungan sudah dikonfirmasi ustadz — tidak bisa dibatalkan santri. Hubungi admin pondok bila darurat.".into()));
         }
         other => return Err(AppError::Unprocessable(format!("status {other} tidak bisa dibatalkan"))),
     }
@@ -954,14 +945,16 @@ pub async fn complete_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64
     if v.status != "CONFIRMED" {
         return Err(AppError::Conflict(format!("status {}, harus CONFIRMED", v.status)));
     }
+    // Aturan 16Sep: ustadz hanya bisa menandai selesai SETELAH waktu kunjungan berakhir
+    // (scheduled_at + duration_hours). Batas atas tetap 24 jam setelahnya. Sebelum itu -> admin force.
     let in_window: i64 = sqlx::query_scalar(
-        "SELECT CASE WHEN UTC_TIMESTAMP() >= DATE_ADD(?, INTERVAL -30 MINUTE) \
+        "SELECT CASE WHEN UTC_TIMESTAMP() >= DATE_ADD(?, INTERVAL duration_hours HOUR) \
               AND UTC_TIMESTAMP() <= DATE_ADD(DATE_ADD(?, INTERVAL duration_hours HOUR), INTERVAL 24 HOUR) \
          THEN 1 ELSE 0 END FROM ustadz_visits WHERE id = ?")
         .bind(&v.scheduled_at).bind(&v.scheduled_at).bind(visit_id)
         .fetch_one(&state.pool).await.map_err(dberr)?;
     if in_window == 0 {
-        return Err(AppError::Unprocessable("di luar jadwal — hubungi admin (force-complete)".into()));
+        return Err(AppError::Unprocessable("belum/kurang dari jadwal — kunjungan hanya bisa ditandai selesai setelah waktunya berakhir".into()));
     }
     let mut tx = state.pool.begin().await.map_err(dberr)?;
     sqlx::query("UPDATE ustadz_visits SET status = 'COMPLETED', completed_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'CONFIRMED'")
