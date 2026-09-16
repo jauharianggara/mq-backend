@@ -90,6 +90,34 @@ fn mock_url(external_id: &str) -> Option<String> {
 
 // ===================== webhook & simulasi =====================
 
+/// Bayar visit pakai deposit: tandai payment PENDING milik visit ini jadi PAID
+/// (channel DEPOSIT) + transisi visit REQUESTED -> WAITING_CONFIRM + notif ustadz.
+/// Dipanggil handler pay-deposit SETELAH wallet::debit sukses.
+pub async fn mark_visit_paid_by_deposit(state: &AppState, visit_id: i64) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE payments SET status = 'PAID', paid_at = UTC_TIMESTAMP(), channel = 'DEPOSIT', \
+         raw_callback = CAST('{}' AS JSON) \
+         WHERE subject_type = 'ustadz_visit' AND subject_id = ? AND status = 'PENDING'")
+        .bind(visit_id)
+        .execute(&state.pool)
+        .await.map_err(dberr)?;
+    let v = crate::modules::visits::service::fetch_visit(&state.pool, visit_id)
+        .await?.ok_or_else(|| AppError::Internal("visit hilang".into()))?;
+    if v.status == "REQUESTED" {
+        let mut tx = state.pool.begin().await.map_err(dberr)?;
+        let n = sqlx::query("UPDATE ustadz_visits SET status = 'WAITING_CONFIRM', paid_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'REQUESTED'")
+            .bind(visit_id).execute(&mut *tx).await.map_err(dberr)?.rows_affected();
+        if n > 0 {
+            log_history(&mut *tx, visit_id, Some("REQUESTED"), "WAITING_CONFIRM", None, "dibayar via deposit").await?;
+            notify(&mut *tx, v.ustadz_id, "VISIT_PAID_WAITING", "Permintaan kunjungan baru",
+                &format!("Santri memesan kunjungan untuk {}. Buka menu Kunjungan utk menerima/menolak (batas 3 jam).", v.scheduled_at),
+                &visit_id.to_string()).await?;
+        }
+        tx.commit().await.map_err(dberr)?;
+    }
+    Ok(())
+}
+
 pub async fn apply_visit_paid(state: &AppState, external_id: &str, invoice_id: Option<&str>, channel: Option<&str>, raw: &str) -> Result<String, AppError> {
     let n = sqlx::query(
         "UPDATE payments SET status = 'PAID', paid_at = UTC_TIMESTAMP(), channel = COALESCE(?, channel), \
@@ -98,7 +126,7 @@ pub async fn apply_visit_paid(state: &AppState, external_id: &str, invoice_id: O
         .bind(channel).bind(raw).bind(external_id).bind(invoice_id).bind(invoice_id)
         .execute(&state.pool).await.map_err(dberr)?.rows_affected();
     let row: Option<(i64, i64, String)> = sqlx::query_as(
-        "SELECT id, subject_id, status FROM payments \\
+        "SELECT id, subject_id, status FROM payments \
          WHERE external_id = ? OR (? IS NOT NULL AND xendit_invoice_id = ?) ORDER BY id DESC LIMIT 1")
         .bind(external_id).bind(invoice_id).bind(invoice_id)
         .fetch_optional(&state.pool).await.map_err(dberr)?;

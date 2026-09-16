@@ -119,8 +119,8 @@ pub async fn pay_deposit(cu: CurrentUser, State(st): State<AppState>, Path(id): 
         return Err(AppError::Unprocessable("saldo_tidak_cukup".into()));
     }
     crate::modules::wallet::service::debit(&st.pool, cu.user_id, v.price_total, "PAYMENT", "ustadz_visit", id).await?;
-    // tandai payment PAID (sumber deposit) + visit WAITING_CONFIRM
-    pay::apply_visit_paid(&st, &format!("deposit-{id}"), None, Some("DEPOSIT"), "{}").await?;
+    // tandai payment PAID (sumber deposit) + visit -> WAITING_CONFIRM
+    pay::mark_visit_paid_by_deposit(&st, id).await?;
     let bal2 = crate::modules::wallet::service::balance(&st.pool, cu.user_id).await?;
     Ok(ok(json!({ "paid": true, "balance": bal2 }), StatusCode::OK))
 }
@@ -180,7 +180,7 @@ pub async fn put_my_location(cu: CurrentUser, State(st): State<AppState>, Json(r
 // ===================== ustadz =====================
 
 fn ustadz_perm(cu: &CurrentUser) -> Result<(), AppError> {
-    cu.require("visits.manage")
+    cu.require("ustadz.visits.manage")
 }
 
 pub async fn get_visit_settings(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
@@ -294,10 +294,17 @@ pub async fn xendit_simulate(State(st): State<AppState>, Json(req): Json<Simulat
         return Err(AppError::Forbidden("hanya utk mode dev/mock".into()));
     }
     let event = req.event.unwrap_or_else(|| "paid".into());
-    let res = match event.as_str() {
-        "paid" => pay::apply_visit_paid(&st, &req.external_id, None, Some("MOCK"), "{}").await?,
-        "expired" => pay::apply_visit_expired(&st, &req.external_id, None, "{}").await?,
-        other => return Err(AppError::Unprocessable(format!("event {other} tidak dikenal"))),
+    let res = if req.external_id.starts_with("topup-") {
+        match event.as_str() {
+            "paid" => pay::apply_topup_paid(&st, &req.external_id, None, "{}").await?,
+            other => return Err(AppError::Unprocessable(format!("event {other} tidak dikenal utk topup"))),
+        }
+    } else {
+        match event.as_str() {
+            "paid" => pay::apply_visit_paid(&st, &req.external_id, None, Some("MOCK"), "{}").await?,
+            "expired" => pay::apply_visit_expired(&st, &req.external_id, None, "{}").await?,
+            other => return Err(AppError::Unprocessable(format!("event {other} tidak dikenal"))),
+        }
     };
     Ok(ok(json!({ "simulated": event, "result": res }), StatusCode::OK))
 }

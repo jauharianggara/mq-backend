@@ -387,7 +387,7 @@ pub async fn slots_for_date(
     if slots.is_empty() { return Ok(vec![]); }
 
     let busy: Vec<(chrono::NaiveDateTime, i64)> = sqlx::query_as(
-        "SELECT scheduled_at, duration_minutes FROM ustadz_visits \
+        "SELECT CAST(scheduled_at AS DATETIME), duration_hours * 60 AS duration_minutes FROM ustadz_visits \
          WHERE ustadz_id = ? AND status IN ('REQUESTED','WAITING_CONFIRM','CONFIRMED')")
         .bind(ustadz_id).fetch_all(pool).await.map_err(dberr)?;
 
@@ -488,7 +488,7 @@ pub async fn create_visit(
         "SELECT COUNT(*) FROM ustadz_visits WHERE ustadz_id = ? \
          AND status IN ('REQUESTED','WAITING_CONFIRM','CONFIRMED') \
          AND scheduled_at < DATE_ADD(?, INTERVAL ? MINUTE) \
-         AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > ?")
+         AND DATE_ADD(scheduled_at, INTERVAL duration_hours HOUR) > ?")
         .bind(req.ustadz_id).bind(sched_utc).bind(req.duration_hours * 60).bind(sched_utc)
         .fetch_one(&mut *tx).await.map_err(dberr)?;
     if overlap > 0 {
@@ -496,11 +496,11 @@ pub async fn create_visit(
         return Err(AppError::Conflict("ustadz_schedule_conflict: jam itu baru saja terisi".into()));
     }
     let ins = sqlx::query(
-        "INSERT INTO ustadz_visits (user_id, ustadz_id, scheduled_at, duration_hours, duration_minutes, \
-         lat, lng, address_label, note, client_key, price_per_hour, price_amount, status, hold_expires_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'REQUESTED', \
-         DATE_ADD(UTC_TIMESTAMP(), INTERVAL (SELECT CAST(value AS UNSIGNED) FROM settings WHERE `key`='visit_invoice_duration_sec') MINUTE))")
-        .bind(user_id).bind(req.ustadz_id).bind(sched_utc).bind(req.duration_hours * 60)
+        "INSERT INTO ustadz_visits (user_id, ustadz_id, scheduled_at, duration_hours, \
+         lat, lng, address_label, note, client_key, price_per_hour, price_total, status, hold_expires_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'REQUESTED', \
+         DATE_ADD(UTC_TIMESTAMP(), INTERVAL (SELECT CAST(value AS UNSIGNED) FROM settings WHERE `key`='visit_invoice_duration_sec') SECOND))")
+        .bind(user_id).bind(req.ustadz_id).bind(sched_utc).bind(req.duration_hours)
         .bind(req.lat).bind(req.lng).bind(req.address_label.trim())
         .bind(req.note.as_deref().map(str::trim).filter(|s| !s.is_empty()))
         .bind(idem_key).bind(price_per_hour).bind(price_total)
@@ -889,8 +889,8 @@ pub async fn confirm_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64)
     let overlap: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM ustadz_visits WHERE ustadz_id = ? AND status = 'CONFIRMED' AND id != ? \
          AND scheduled_at < DATE_ADD(?, INTERVAL ? MINUTE) \
-         AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > ?")
-        .bind(ustadz_user_id).bind(visit_id).bind(&v.scheduled_at).bind(v.duration_hours).bind(&v.scheduled_at)
+         AND DATE_ADD(scheduled_at, INTERVAL duration_hours HOUR) > ?")
+        .bind(ustadz_user_id).bind(visit_id).bind(&v.scheduled_at).bind(v.duration_hours * 60).bind(&v.scheduled_at)
         .fetch_one(&mut *tx).await.map_err(dberr)?;
     if overlap > 0 {
         tx.rollback().await.map_err(dberr)?;
@@ -942,7 +942,7 @@ pub async fn complete_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64
     }
     let in_window: i64 = sqlx::query_scalar(
         "SELECT CASE WHEN UTC_TIMESTAMP() >= DATE_ADD(?, INTERVAL -30 MINUTE) \
-              AND UTC_TIMESTAMP() <= DATE_ADD(DATE_ADD(?, INTERVAL duration_minutes MINUTE), INTERVAL 24 HOUR) \
+              AND UTC_TIMESTAMP() <= DATE_ADD(DATE_ADD(?, INTERVAL duration_hours HOUR), INTERVAL 24 HOUR) \
          THEN 1 ELSE 0 END FROM ustadz_visits WHERE id = ?")
         .bind(&v.scheduled_at).bind(&v.scheduled_at).bind(visit_id)
         .fetch_one(&state.pool).await.map_err(dberr)?;
