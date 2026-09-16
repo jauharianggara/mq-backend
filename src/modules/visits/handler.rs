@@ -55,8 +55,19 @@ pub async fn slots(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<
     if !(1..=8).contains(&q.hours) {
         return Err(AppError::Unprocessable("durasi 1-8 jam".into()));
     }
-    let slots = svc::slots_for_date(&st.pool, q.ustadz_id, &q.date, q.hours).await?;
-    Ok(ok(SlotsOut { date: q.date.clone(), hours: q.hours, slots }, StatusCode::OK))
+    let (slots, max_hours) = svc::slots_for_date(&st.pool, q.ustadz_id, &q.date, q.hours).await?;
+    Ok(ok(
+        SlotsOut {
+            date: q.date.clone(),
+            hours: q.hours,
+            slots,
+            max_hours: max_hours
+                .into_iter()
+                .map(|(start, mh)| SlotMax { start, max_hours: mh })
+                .collect(),
+        },
+        StatusCode::OK,
+    ))
 }
 
 pub async fn create_visit(

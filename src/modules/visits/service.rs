@@ -372,20 +372,20 @@ pub async fn slots_for_date(
     ustadz_id: i64,
     date: &str,
     hours: i64,
-) -> Result<Vec<String>, AppError> {
+) -> Result<(Vec<String>, Vec<(String, i64)>), AppError> {
     let d = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
         .map_err(|_| AppError::Unprocessable("date YYYY-MM-DD".into()))?;
     let weekday = d.weekday().num_days_from_sunday() as i8; // 0=Minggu
     let bo: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM ustadz_blackout_dates WHERE ustadz_id = ? AND off_date = ?")
         .bind(ustadz_id).bind(d).fetch_one(pool).await.map_err(dberr)?;
-    if bo > 0 { return Ok(vec![]); }
+    if bo > 0 { return Ok((vec![], vec![])); }
     let slots: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT start_minute, end_minute FROM ustadz_availability_slots \
          WHERE ustadz_id = ? AND weekday = ? ORDER BY start_minute")
         .bind(ustadz_id).bind(weekday)
         .fetch_all(pool).await.map_err(dberr)?;
-    if slots.is_empty() { return Ok(vec![]); }
+    if slots.is_empty() { return Ok((vec![], vec![])); }
 
     let busy: Vec<(chrono::NaiveDateTime, i64)> = sqlx::query_as(
         "SELECT CAST(scheduled_at AS DATETIME), duration_hours * 60 AS duration_minutes FROM ustadz_visits \
@@ -396,27 +396,40 @@ pub async fn slots_for_date(
         .fetch_one(pool).await.map_err(dberr)?;
     let min_h = setting_i64(pool, "visit_min_schedule_hours", 2).await;
     let earliest_utc = now_utc + chrono::Duration::hours(min_h);
+    let max_h_setting = setting_i64(pool, "visit_max_hours", 8).await;
 
     let mut out = Vec::new();
+    let mut max_hours: Vec<(String, i64)> = Vec::new();
     for (start_m, end_m) in slots {
         let mut m = start_m;
-        while m + hours * 60 <= end_m {
+        while m < end_m {
             let base_wib = d.and_hms_opt(0, 0, 0).unwrap() + chrono::Duration::minutes(m as i64);
             let start_utc = base_wib - chrono::Duration::hours(7);
             if start_utc >= earliest_utc {
-                let end_utc = start_utc + chrono::Duration::hours(hours);
-                let bentrok = busy.iter().any(|(s, dm)| {
-                    let e = *s + chrono::Duration::minutes((*dm).max(1) as i64);
-                    *s < end_utc && e > start_utc
-                });
-                if !bentrok {
-                    out.push(format!("{:02}:{:02}", m / 60, m % 60));
+                // jam beruntun maksimal dari jam mulai ini (kena booking / ujung rentang / batas global)
+                let mut j: i64 = 0;
+                loop {
+                    let nxt = j + 1;
+                    if nxt > max_h_setting { break; }
+                    if m + nxt * 60 > end_m { break; }
+                    let e_utc = start_utc + chrono::Duration::hours(nxt as i64);
+                    let bentrok = busy.iter().any(|(s, dm)| {
+                        let e = *s + chrono::Duration::minutes((*dm).max(1) as i64);
+                        *s < e_utc && e > start_utc
+                    });
+                    if bentrok { break; }
+                    j = nxt;
+                }
+                if j >= 1 {
+                    let label = format!("{:02}:{:02}", m / 60, m % 60);
+                    max_hours.push((label.clone(), j));
+                    if j >= hours { out.push(label); }
                 }
             }
             m += 60;
         }
     }
-    Ok(out)
+    Ok((out, max_hours))
 }
 
 // ===================== create (hold + payment) =====================
@@ -463,7 +476,7 @@ pub async fn create_visit(
         .map_err(|_| AppError::Unprocessable("tanggal/jam tidak valid".into()))?;
     let sched_utc = sched_wib - chrono::Duration::hours(7);
     let hhmm = format!("{:02}:{:02}", sched_wib.hour(), sched_wib.minute());
-    let avail = slots_for_date(&state.pool, req.ustadz_id, &req.date, req.duration_hours).await?;
+    let (avail, _max_hours_chk) = slots_for_date(&state.pool, req.ustadz_id, &req.date, req.duration_hours).await?;
     if !avail.contains(&hhmm) {
         return Err(AppError::Unprocessable(format!("jam {hhmm} tidak tersedia — pilih jam dari daftar")));
     }

@@ -29,11 +29,19 @@ pub struct SlotsReq {
 }
 
 #[derive(Serialize)]
+pub struct SlotMax {
+    pub start: String,
+    pub max_hours: i64,
+}
+
+#[derive(Serialize)]
 pub struct SlotsOut {
     pub date: String,
     pub hours: i64,
-    /// jam mulai yang bisa dipilih (WIB, "HH:MM")
+    /// jam mulai yang bisa dipilih untuk durasi `hours` (WIB, "HH:MM")
     pub slots: Vec<String>,
+    /// jam beruntun maksimal untuk SETIAP jam mulai yang terbuka ≥ 1 jam
+    pub max_hours: Vec<SlotMax>,
 }
 
 // ---------- booking ----------
