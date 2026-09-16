@@ -144,7 +144,7 @@ pub async fn group_progress(pool: &MySqlPool, ustadz_id: i64, campaign_id: i64) 
 /// POST /ustadz/khatmil-groups/{id}/accept — ACC penugasan (hanya ustadz yang ditunjuk).
 pub async fn accept_group(pool: &MySqlPool, ustadz_id: i64, group_id: i64) -> Result<(), AppError> {
     let row: Option<(i64, i64, i64)> = sqlx::query_as(
-        "SELECT campaign_id, group_no, pending_ustadz_id FROM khatmil_groups \
+        "SELECT id, campaign_id, pending_ustadz_id FROM khatmil_groups \
          WHERE id = ? AND pending_ustadz_id = ?")
         .bind(group_id).bind(ustadz_id).fetch_optional(pool).await.map_err(dberr)?;
     let (gid, campaign_id, _pending) = row.ok_or_else(|| AppError::NotFound("penugasan tidak ditemukan".into()))?;
