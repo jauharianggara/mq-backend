@@ -199,6 +199,32 @@ pub async fn my_visits(cu: CurrentUser, State(st): State<AppState>) -> Result<Re
     Ok(ok(svc::my_visits(&st.pool, cu.user_id).await?, StatusCode::OK))
 }
 
+// ===================== penarikan dana (payout ustadz — self-service) =====================
+
+pub async fn my_payouts(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
+    ustadz_perm(&cu)?;
+    let items = pay::ustadz_payouts(&st.pool, cu.user_id).await?;
+    let fee = svc::setting_i64(&st.pool, "payout_fee_amount", 6500).await;
+    let min = svc::setting_i64(&st.pool, "payout_min_amount", 50000).await;
+    Ok(ok(json!({ "items": items, "fee": fee, "min": min }), StatusCode::OK))
+}
+
+pub async fn request_payout(cu: CurrentUser, State(st): State<AppState>, Json(req): Json<PayoutCreateReq>) -> Result<Response, AppError> {
+    ustadz_perm(&cu)?;
+    let bank = req.bank_name.trim();
+    let no = req.account_no.trim();
+    let an = req.account_name.trim();
+    if bank.is_empty() || no.is_empty() || an.is_empty() {
+        return Err(AppError::Unprocessable("nama bank, nomor rekening, dan nama pemilik wajib diisi".into()));
+    }
+    if req.amount <= 0 {
+        return Err(AppError::Unprocessable("nominal tidak valid".into()));
+    }
+    let id = pay::create_payout(&st, cu.user_id, bank, no, an, req.amount).await?;
+    let bal = crate::modules::wallet::service::balance(&st.pool, cu.user_id).await?;
+    Ok(ok(json!({ "id": id, "balance": bal }), StatusCode::CREATED))
+}
+
 pub async fn confirm_visit(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
     ustadz_perm(&cu)?;
     let out = svc::confirm_visit(&st, cu.user_id, id).await?;

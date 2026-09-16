@@ -138,7 +138,7 @@
     "video": []
   },
   "total_files": 128,
-  "total_words": 143018,
+  "total_words": 145107,
   "needs_graph": true,
   "warning": null,
   "skipped_sensitive": [
@@ -152,8 +152,8 @@
     "source": "default-auto",
     "root": ".",
     "git_root": ".",
-    "head": "5d2621b9053a0286087ef35f1f2c6f869b3f1b4b",
-    "candidate_count": 382,
+    "head": "ab1119d67ac0e8c48e328cc00b4422d7f20c9083",
+    "candidate_count": 386,
     "included_count": 128,
     "excluded_untracked_count": 0,
     "excluded_ignored_count": 20996,

@@ -34,6 +34,7 @@ pub fn routes() -> Router<AppState> {
         .route("/ustadz/visits/{id}/confirm", post(handler::confirm_visit))
         .route("/ustadz/visits/{id}/decline", post(handler::decline_visit))
         .route("/ustadz/visits/{id}/complete", post(handler::complete_visit))
+        .route("/ustadz/payouts", get(handler::my_payouts).post(handler::request_payout))
         // ---- pembayaran (webhook publik + simulasi dev) ----
         .route("/payments/xendit/callback", post(handler::xendit_callback))
         .route("/payments/xendit/simulate", post(handler::xendit_simulate))

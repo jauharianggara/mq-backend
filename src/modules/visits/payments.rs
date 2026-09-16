@@ -2,7 +2,7 @@
 //! refund ke deposit santri, penghasilan ustadz, payout & worker jobs.
 use sqlx::MySqlPool;
 
-use crate::modules::visits::service::{dberr, log_history, notify, setting_i64};
+use crate::modules::visits::service::{dberr, log_history, notify, notify_admins, setting_i64};
 use crate::shared::error::AppError;
 use crate::state::AppState;
 
@@ -325,14 +325,23 @@ pub async fn create_payout(state: &AppState, ustadz_id: i64, bank: &str, no: &st
     if amount < min {
         return Err(AppError::Unprocessable(format!("minimum penarikan Rp {min}")));
     }
-    // diterima = amount - fee; saldo didebit sebesar amount
+    // diterima = amount - fee; saldo didebit sebesar amount (anti tarik dua kali)
     crate::modules::wallet::service::debit(&state.pool, ustadz_id, amount, "PAYOUT", "payout_request", 0).await?;
     let ins = sqlx::query(
         "INSERT INTO payout_requests (ustadz_id, amount, fee, bank_name, bank_account_no, bank_account_name) \
          VALUES (?, ?, ?, ?, ?, ?)")
         .bind(ustadz_id).bind(amount - fee).bind(fee).bind(bank).bind(no).bind(an)
         .execute(&state.pool).await.map_err(dberr)?;
-    Ok(ins.last_insert_id() as i64)
+    let id = ins.last_insert_id() as i64;
+    notify_admins(&state.pool, "Pengajuan penarikan dana baru",
+        &format!("Ustadz mengajukan penarikan Rp {} (diterima Rp {}) ke {bank} {no}. Buka menu Penarikan utk ACC/tolak.", fmt_rp(amount), fmt_rp(amount - fee))).await;
+    Ok(id)
+}
+
+pub fn fmt_rp(n: i64) -> String {
+    n.to_string().chars().rev().collect::<Vec<_>>().chunks(3)
+        .map(|c| c.iter().collect::<String>())
+        .collect::<Vec<_>>().join(".").chars().rev().collect()
 }
 
 pub async fn ustadz_payouts(pool: &MySqlPool, ustadz_id: i64) -> Result<Vec<crate::modules::visits::dto::PayoutOut>, AppError> {
@@ -348,10 +357,13 @@ pub async fn ustadz_payouts(pool: &MySqlPool, ustadz_id: i64) -> Result<Vec<crat
 }
 
 pub async fn admin_list_payouts(pool: &MySqlPool, status: Option<&str>, limit: i64, cursor: Option<i64>) -> Result<(Vec<serde_json::Value>, Option<String>), AppError> {
-    let rows: Vec<(i64, i64, i64, i64, String, String, String, String, String)> = sqlx::query_as(
+    let rows: Vec<(i64, i64, i64, i64, String, String, String, String, String, String)> = sqlx::query_as(
         "SELECT pr.id, pr.ustadz_id, pr.amount, pr.fee, pr.bank_name, pr.bank_account_no, pr.bank_account_name, pr.status, \
+         COALESCE(NULLIF(up.full_name, ''), '(tanpa nama)'), \
          DATE_FORMAT(pr.created_at, '%Y-%m-%dT%H:%i:%sZ') \
-         FROM payout_requests pr WHERE (? IS NULL OR pr.status = ?) AND (? IS NULL OR pr.id < ?) ORDER BY pr.id DESC LIMIT ?")
+         FROM payout_requests pr \
+         LEFT JOIN user_profiles up ON up.user_id = pr.ustadz_id \
+         WHERE (? IS NULL OR pr.status = ?) AND (? IS NULL OR pr.id < ?) ORDER BY pr.id DESC LIMIT ?")
         .bind(status).bind(status).bind(cursor).bind(cursor).bind(limit + 1)
         .fetch_all(pool).await.map_err(dberr)?;
     let mut out = Vec::new();
@@ -360,7 +372,7 @@ pub async fn admin_list_payouts(pool: &MySqlPool, status: Option<&str>, limit: i
         if (i as i64) == limit { next = Some(r.0.to_string()); break; }
         out.push(serde_json::json!({
             "id": r.0, "ustadz_id": r.1, "amount": r.2, "fee": r.3, "bank_name": r.4,
-            "account_no": r.5, "account_name": r.6, "status": r.7, "created_at": r.8,
+            "account_no": r.5, "account_name": r.6, "status": r.7, "ustadz_name": r.8, "created_at": r.9,
         }));
     }
     Ok((out, next))
@@ -419,26 +431,38 @@ pub async fn admin_payout_approve(pool: &MySqlPool, admin_id: i64, payout_id: i6
         .bind(admin_id).bind(payout_id)
         .execute(pool).await.map_err(dberr)?.rows_affected();
     if n == 0 { return Err(AppError::Conflict("permintaan tidak dalam status PENDING".into())); }
+    let row: Option<(i64, i64, String, String)> = sqlx::query_as(
+        "SELECT ustadz_id, amount, bank_name, bank_account_no FROM payout_requests WHERE id = ?")
+        .bind(payout_id).fetch_optional(pool).await.map_err(dberr)?;
+    if let Some((uid, amount, bank, no)) = row {
+        notify(pool, uid, "PAYOUT_APPROVED", "Penarikan disetujui",
+            &format!("Pengajuan penarikan Rp {} disetujui — menunggu transfer ke {bank} {no}.", fmt_rp(amount)), "wallet").await?;
+    }
     Ok(())
 }
 
 pub async fn admin_payout_reject(pool: &MySqlPool, admin_id: i64, payout_id: i64, reason: &str) -> Result<(), AppError> {
-    let row: Option<(i64, i64)> = sqlx::query_as(
-        "SELECT ustadz_id, amount FROM payout_requests WHERE id = ? AND status IN ('PENDING','APPROVED')")
+    // amount = diterima (setelah fee) — yang didebit saat pengajuan = amount + fee,
+    // tolak harus mengembalikan SEMUA yang didebit (fee ikut kembali).
+    let row: Option<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT ustadz_id, amount, fee FROM payout_requests WHERE id = ? AND status IN ('PENDING','APPROVED')")
         .bind(payout_id).fetch_optional(pool).await.map_err(dberr)?;
-    let (ustadz_id, amount) = row.ok_or_else(|| AppError::Conflict("permintaan tidak bisa ditolak".into()))?;
+    let (ustadz_id, amount, fee) = row.ok_or_else(|| AppError::Conflict("permintaan tidak bisa ditolak".into()))?;
+    let refunded = amount + fee;
     let mut tx = pool.begin().await.map_err(dberr)?;
     sqlx::query("UPDATE payout_requests SET status = 'REJECTED', rejected_reason = ?, processed_by = ?, processed_at = UTC_TIMESTAMP() WHERE id = ?")
         .bind(reason.trim()).bind(admin_id).bind(payout_id)
         .execute(&mut *tx).await.map_err(dberr)?;
     sqlx::query("UPDATE wallets SET balance = balance + ? WHERE user_id = ?")
-        .bind(amount).bind(ustadz_id)
+        .bind(refunded).bind(ustadz_id)
         .execute(&mut *tx).await.map_err(dberr)?;
     sqlx::query(
         "INSERT INTO wallet_transactions (user_id, tx_type, amount, balance_after, subject_type, subject_id)          SELECT ?, 'REFUND', ?, balance, 'payout_request', ? FROM wallets WHERE user_id = ?")
-        .bind(ustadz_id).bind(amount).bind(payout_id).bind(ustadz_id)
+        .bind(ustadz_id).bind(refunded).bind(payout_id).bind(ustadz_id)
         .execute(&mut *tx).await.map_err(dberr)?;
     tx.commit().await.map_err(dberr)?;
+    notify(pool, ustadz_id, "PAYOUT_REJECTED", "Penarikan ditolak",
+        &format!("Pengajuan penarikan Rp {} ditolak — dana kembali ke saldo Anda. Alasan: {}", fmt_rp(refunded), reason.trim()), "wallet").await?;
     Ok(())
 }
 
@@ -449,6 +473,13 @@ pub async fn admin_payout_mark_transferred(pool: &MySqlPool, admin_id: i64, payo
         .execute(pool).await.map_err(dberr)?.rows_affected();
     if n == 0 {
         return Err(AppError::Conflict("permintaan tidak dalam status APPROVED".into()));
+    }
+    let row: Option<(i64, i64, String, String)> = sqlx::query_as(
+        "SELECT ustadz_id, amount, bank_name, bank_account_no FROM payout_requests WHERE id = ?")
+        .bind(payout_id).fetch_optional(pool).await.map_err(dberr)?;
+    if let Some((uid, amount, bank, no)) = row {
+        notify(pool, uid, "PAYOUT_TRANSFERRED", "Dana telah ditransfer",
+            &format!("Rp {} telah ditransfer ke {bank} {no}.", fmt_rp(amount)), "wallet").await?;
     }
     Ok(())
 }

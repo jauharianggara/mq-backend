@@ -1,34 +1,34 @@
 # Graph Report - .  (2026-09-16)
 
 ## Corpus Check
-- 128 files · ~143,018 words
+- 128 files · ~145,107 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 880 nodes · 1288 edges · 75 communities detected
+- 883 nodes · 1295 edges · 75 communities detected
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS
 - Token cost: 0 input · 0 output
-- Edge kinds: contains: 730 · calls: 371 · references: 157 · method: 26 · rationale_for: 4
+- Edge kinds: contains: 733 · calls: 375 · references: 157 · method: 26 · rationale_for: 4
 
 
 ## Input Scope
 - Requested: auto
 - Resolved: committed (source: default-auto)
-- Included files: 128 · Candidates: 382
+- Included files: 128 · Candidates: 386
 - Excluded: 0 untracked · 20996 ignored · 2 sensitive · 0 missing committed
 - Recommendation: Use --scope all or graphify.yaml inputs.corpus for a knowledge-base folder.
 
 ## Graph Freshness
-- Built from Git commit: `5d2621b`
+- Built from Git commit: `ab1119d`
 - Compare this hash to `git rev-parse HEAD` before trusting freshness-sensitive graph output.
 ## God Nodes (most connected - your core abstractions)
-1. `ok()` - 37 edges
+1. `ok()` - 39 edges
 2. `ok()` - 16 edges
 3. `fetch_visit()` - 16 edges
 4. `ok()` - 15 edges
 5. `visit_out()` - 15 edges
-6. `ok()` - 12 edges
-7. `ustadz_perm()` - 12 edges
+6. `ustadz_perm()` - 14 edges
+7. `ok()` - 12 edges
 8. `AppState` - 11 edges
 9. `ok()` - 10 edges
 10. `admin_perm()` - 10 edges
@@ -40,7 +40,7 @@
 
 ### Community 0 - "Community 0"
 Cohesion: 0.09
-Nodes (48): add_blackout(), add_slot(), admin_approve_payout(), admin_force_cancel(), admin_force_complete(), admin_list_payouts(), admin_list_visits(), admin_mark_transferred() (+40 more)
+Nodes (50): add_blackout(), add_slot(), admin_approve_payout(), admin_force_cancel(), admin_force_complete(), admin_list_payouts(), admin_list_visits(), admin_mark_transferred() (+42 more)
 
 ### Community 1 - "Community 1"
 Cohesion: 0.09
@@ -374,13 +374,13 @@ _Questions this graph is uniquely positioned to answer:_
 - **What connects `faqs`, `notification_templates`, `scheduled_jobs` to the rest of the system?**
   _134 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Community 0` be split into smaller, more focused modules?**
-  _Cohesion score 0.0935374149659864 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.09098039215686274 - nodes in this community are weakly interconnected._
 - **Should `Community 1` be split into smaller, more focused modules?**
   _Cohesion score 0.0935374149659864 - nodes in this community are weakly interconnected._
 - **Should `Community 2` be split into smaller, more focused modules?**
   _Cohesion score 0.0625 - nodes in this community are weakly interconnected._
 - **Should `Community 3` be split into smaller, more focused modules?**
-  _Cohesion score 0.09230769230769231 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.08831908831908832 - nodes in this community are weakly interconnected._
 - **Should `Community 4` be split into smaller, more focused modules?**
   _Cohesion score 0.14333333333333334 - nodes in this community are weakly interconnected._
 - **Should `Community 12` be split into smaller, more focused modules?**
