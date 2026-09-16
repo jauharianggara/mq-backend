@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
-  "branchName": "wip-v2-final",
+  "branchName": "main",
   "worktreePath": "C:\\Users\\jauha\\ZCodeProject\\mq-backend",
-  "upstream": null,
-  "mergeBase": null,
-  "firstSeenHead": "e8636e061458657b8ab539301cd632f7db8e1591",
-  "lastSeenHead": "00c44e50e74aa7d6501b99d41eb716e505b9669a",
-  "lastAnalyzedHead": "00c44e50e74aa7d6501b99d41eb716e505b9669a",
+  "upstream": "origin/main",
+  "mergeBase": "152d07945ce0cbd6ba31ffccd4d14fbcf157c22b",
+  "firstSeenHead": "af3c16f4e42c7e58f4df52845620e43c0984b9e5",
+  "lastSeenHead": "152d07945ce0cbd6ba31ffccd4d14fbcf157c22b",
+  "lastAnalyzedHead": "152d07945ce0cbd6ba31ffccd4d14fbcf157c22b",
   "stale": false,
   "staleReason": null,
   "staleSince": null,
   "lifecycleEvent": null,
-  "createdAt": "2026-09-16T10:12:48.963Z",
-  "updatedAt": "2026-09-16T11:49:53.378Z"
+  "createdAt": "2026-09-16T19:59:29.321Z",
+  "updatedAt": "2026-09-16T20:10:06.217Z"
 }

@@ -217,7 +217,7 @@ pub async fn join(pool: &MySqlPool, user_id: i64, campaign_id: i64) -> Result<()
     Ok(())
 }
 
-pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz: Option<i64>) -> Result<AssignmentOut, AppError> {
+pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, _juz: Option<i64>) -> Result<AssignmentOut, AppError> {
     let (status, _minmin): (String, i64) = sqlx::query_as(
         "SELECT status, min_minutes_per_juz FROM khatmil_campaigns WHERE id = ?")
         .bind(campaign_id).fetch_optional(pool).await.map_err(dberr)?
@@ -231,14 +231,17 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz: Option
         .fetch_optional(pool).await.map_err(dberr)?
         .ok_or_else(|| AppError::Unprocessable("join campaign dulu sebelum klaim juz".into()))?;
 
-    let juz = match juz {
-        Some(j) => {
-            if !(1..=30).contains(&j) {
-                return Err(AppError::Unprocessable("juz 1-30".into()));
-            }
-            j
-        }
-        None => {
+    // ATURAN: satu santri satu juz — yang sudah memegang tidak boleh klaim lagi
+    let already: Option<(i64,)> = sqlx::query_as(
+        "SELECT juz FROM khatmil_juz_assignments WHERE campaign_id = ? AND participant_id = ? AND status IN ('ASSIGNED','IN_PROGRESS')")
+        .bind(campaign_id).bind(participant.0).fetch_optional(pool).await.map_err(dberr)?;
+    if let Some((held,)) = already {
+        return Err(AppError::Conflict(format!(
+            "Anda sudah memegang juz {held} — satu santri satu juz")));
+    }
+
+    // ATURAN: santri TIDAK memilih juz — otomatis juz kosong terkecil
+    let juz = {
             // auto-assign: juz kosong terkecil (slot aktif = ASSIGNED/IN_PROGRESS)
             let free: Option<(i64,)> = sqlx::query_as(
                 "SELECT j.j FROM (SELECT 1 j UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 \
@@ -248,8 +251,7 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz: Option
                  WHERE NOT EXISTS (SELECT 1 FROM khatmil_juz_assignments a WHERE a.campaign_id = ? AND a.juz = j.j AND a.status IN ('ASSIGNED','IN_PROGRESS')) \
                  ORDER BY j.j LIMIT 1")
                 .bind(campaign_id).fetch_optional(pool).await.map_err(dberr)?;
-            free.map(|f| f.0).ok_or_else(|| AppError::Conflict("semua juz sudah diklaim peserta lain".into()))?
-        }
+            free.map(|f| f.0).ok_or_else(|| AppError::Conflict("semua 30 juz sudah terisi peserta lain".into()))?
     };
 
     // CLAIM = INSERT murni — partial-unique marker-aktif (generated col) = jaminan final (0009)
