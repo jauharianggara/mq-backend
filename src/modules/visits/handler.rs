@@ -180,7 +180,7 @@ pub async fn put_my_location(cu: CurrentUser, State(st): State<AppState>, Json(r
 // ===================== ustadz =====================
 
 fn ustadz_perm(cu: &CurrentUser) -> Result<(), AppError> {
-    cu.require("ustadz.visits.manage")
+    cu.require("visits.manage")
 }
 
 pub async fn get_visit_settings(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
