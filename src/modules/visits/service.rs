@@ -756,12 +756,24 @@ pub async fn review_status(pool: &MySqlPool, user_id: i64, visit_id: i64) -> Res
         .bind(visit_id).bind(user_id).fetch_optional(pool).await.map_err(dberr)?;
     let counterpart: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM visit_reviews WHERE visit_id = ? AND reviewer_id != ?")
         .bind(visit_id).bind(user_id).fetch_one(pool).await.map_err(dberr)?;
+    let revealed = mine.as_ref().map(|m| m.2 != 0).unwrap_or(v.status == "REVIEWED");
+    // rating & komentar lawan — hanya setelah reveal (jaga double-blind)
+    let (cp_rating, cp_comment): (Option<i8>, Option<String>) = if revealed {
+        sqlx::query_as("SELECT rating, comment FROM visit_reviews WHERE visit_id = ? AND reviewer_id != ?")
+            .bind(visit_id).bind(user_id)
+            .fetch_optional(pool).await.map_err(dberr)?
+            .map(|(r, c)| (Some(r), c)).unwrap_or((None, None))
+    } else {
+        (None, None)
+    };
     Ok(ReviewStatusOut {
         can_review: v.status == "COMPLETED" && mine.is_none(),
         my_rating: mine.as_ref().map(|m| m.0),
         my_comment: mine.as_ref().and_then(|m| m.1.clone()),
         counterpart_submitted: counterpart > 0,
-        revealed: mine.as_ref().map(|m| m.2 != 0).unwrap_or(v.status == "REVIEWED"),
+        revealed,
+        counterpart_rating: cp_rating,
+        counterpart_comment: cp_comment,
     })
 }
 
@@ -890,7 +902,19 @@ pub async fn my_visits(pool: &MySqlPool, ustadz_id: i64) -> Result<MyVisitsOut, 
             upcoming.push(visit_out(pool, &v, Some(ustadz_id)).await?);
         }
     }
-    Ok(MyVisitsOut { incoming, upcoming })
+    // riwayat: status terminal, terbaru dulu
+    let rows3: Vec<(i64,)> = sqlx::query_as(
+        "SELECT id FROM ustadz_visits WHERE ustadz_id = ? \
+         AND status IN ('COMPLETED','REVIEWED','CANCELED','DECLINED','PAYMENT_EXPIRED') \
+         ORDER BY COALESCE(reviewed_at, completed_at, canceled_at, declined_at, created_at) DESC LIMIT 30")
+        .bind(ustadz_id).fetch_all(pool).await.map_err(dberr)?;
+    let mut history = Vec::new();
+    for (id,) in rows3 {
+        if let Some(v) = fetch_visit(pool, id).await? {
+            history.push(visit_out(pool, &v, Some(ustadz_id)).await?);
+        }
+    }
+    Ok(MyVisitsOut { incoming, upcoming, history })
 }
 
 pub async fn confirm_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64) -> Result<VisitOut, AppError> {

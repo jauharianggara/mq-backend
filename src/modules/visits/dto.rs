@@ -185,6 +185,9 @@ pub struct ReviewStatusOut {
     pub my_comment: Option<String>,
     pub counterpart_submitted: bool,
     pub revealed: bool,
+    /// Rating & komentar lawan — hanya terisi SETELAH reveal (double-blind).
+    pub counterpart_rating: Option<i8>,
+    pub counterpart_comment: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -229,6 +232,8 @@ pub struct IncomingVisitOut {
 pub struct MyVisitsOut {
     pub incoming: Vec<IncomingVisitOut>,
     pub upcoming: Vec<VisitOut>,
+    /// Pesanan selesai/batal/tolak/hangus — riwayat terbaru dulu.
+    pub history: Vec<VisitOut>,
 }
 
 // ---------- wallet ----------

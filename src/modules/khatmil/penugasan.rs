@@ -76,9 +76,10 @@ pub async fn overview(pool: &MySqlPool, ustadz_id: i64) -> Result<serde_json::Va
     let mut dibina_out = Vec::new();
     for g in &dibina {
         let (filled, completed): (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*), \
-             (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.group_id = ? AND a.status = 'COMPLETED') \
-             FROM khatmil_juz_assignments a WHERE a.group_id = ?")
+            "SELECT \
+             (SELECT COUNT(DISTINCT juz) FROM khatmil_juz_assignments WHERE group_id = ? AND status IN ('ASSIGNED','IN_PROGRESS','COMPLETED')), \
+             (SELECT COUNT(DISTINCT juz) FROM khatmil_juz_assignments WHERE group_id = ? AND status = 'COMPLETED') \
+             FROM DUAL")
             .bind(g.0).bind(g.0).fetch_one(pool).await.map_err(dberr)?;
         dibina_out.push(serde_json::json!({
             "group_id": g.0, "campaign_id": g.1, "group_no": g.2,
@@ -115,18 +116,20 @@ pub async fn group_progress(pool: &MySqlPool, ustadz_id: i64, campaign_id: i64) 
     let mut kelompok = Vec::new();
     for (gid, gno) in groups {
         let filled: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM khatmil_juz_assignments WHERE group_id = ?")
+            "SELECT COUNT(DISTINCT a.juz) FROM khatmil_juz_assignments a WHERE a.group_id = ? AND a.status IN ('ASSIGNED','IN_PROGRESS','COMPLETED')")
             .bind(gid).fetch_one(pool).await.map_err(dberr)?;
         let completed: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM khatmil_juz_assignments WHERE group_id = ? AND status = 'COMPLETED'")
+            "SELECT COUNT(DISTINCT juz) FROM khatmil_juz_assignments WHERE group_id = ? AND status = 'COMPLETED'")
             .bind(gid).fetch_one(pool).await.map_err(dberr)?;
         let juz_rows: Vec<(i64, Option<String>, Option<String>, Option<i64>, Option<i64>)> = sqlx::query_as(
             "SELECT a.juz, a.status, \
              (SELECT COALESCE(NULLIF(p2.full_name,''),'-') FROM khatmil_participants pp LEFT JOIN user_profiles p2 ON p2.user_id = pp.user_id WHERE pp.id = a.participant_id), \
              pg.current_surah_id, pg.current_ayah \
-             FROM khatmil_juz_assignments a \
+             FROM (SELECT juz, MAX(id) mid FROM khatmil_juz_assignments \
+                   WHERE group_id = ? AND status IN ('ASSIGNED','IN_PROGRESS','COMPLETED') GROUP BY juz) lt \
+             JOIN khatmil_juz_assignments a ON a.id = lt.mid \
              LEFT JOIN khatmil_progress pg ON pg.assignment_id = a.id \
-             WHERE a.group_id = ? ORDER BY a.juz")
+             ORDER BY a.juz")
             .bind(gid).fetch_all(pool).await.map_err(dberr)?;
         let juzs: Vec<serde_json::Value> = juz_rows.iter().map(|j| serde_json::json!({
             "juz": j.0,
