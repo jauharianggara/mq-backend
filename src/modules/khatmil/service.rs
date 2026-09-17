@@ -156,7 +156,7 @@ pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail
              DATE_FORMAT(c.period_start, '%Y-%m-%d'), DATE_FORMAT(c.period_end, '%Y-%m-%d') \
              FROM khatmil_campaigns c WHERE c.id = ?")
         .bind(id).fetch_optional(pool).await.map_err(dberr)?;
-    let (cid, slug, name, descr, maxp, mode, status, target, minmin, rmv, participants, completed, pctv, ps, pe) = base
+    let (cid, slug, name, descr, maxp, mode, status, target, minmin, rmv, participants, completed, _pct_base, ps, pe) = base
         .ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
     // peta 30 juz — assignment terbaru per juz apa pun statusnya (juz COMPLETED tetap terlihat)
     let rows: Vec<(i64, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<String>, i64, Option<i64>)> =
@@ -181,6 +181,20 @@ pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail
         current_surah: r.5, current_ayah: r.6, completed_at: r.7,
         progress_pct: pct(r.9.unwrap_or(0), r.8),
     }).collect();
+
+    // progres keseluruhan = rata-rata progres BACAAN juz yang terisi
+    // (juz COMPLETED dihitung penuh; juz IN_PROGRESS memakai posisi terakhir)
+    let (mut total_read, mut total_all) = (0i64, 0i64);
+    for r in rows.iter() {
+        if r.8 <= 0 { continue; }
+        total_all += r.8;
+        if r.1 == "COMPLETED" {
+            total_read += r.8;
+        } else {
+            total_read += r.9.unwrap_or(0);
+        }
+    }
+    let pctv = pct(total_read, total_all);
     let groups: Vec<(i64, i64, i64, Option<String>)> = sqlx::query_as(
         "SELECT g.id, g.group_no,          (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.group_id = g.id AND a.active_marker IS NOT NULL),          (SELECT COALESCE(NULLIF(upn.full_name,''),'Ustadz') FROM khatmil_groups g2             LEFT JOIN user_profiles upn ON upn.user_id = g2.ustadz_id WHERE g2.id = g.id)          FROM khatmil_groups g WHERE g.campaign_id = ? ORDER BY g.group_no")
         .bind(id).fetch_all(pool).await.map_err(dberr)?;
