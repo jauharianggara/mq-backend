@@ -268,7 +268,7 @@ async fn santri_detail(cu: CurrentUser, State(st): State<AppState>, Path(id): Pa
         .bind(id).fetch_optional(&st.pool).await.map_err(dberr)?;
     let Some(r) = row else { return Err(AppError::NotFound("santri tidak ditemukan".into())); };
     // deposit + mutasi terakhir
-    let balance: i64 = sqlx::query_scalar("SELECT COALESCE(balance,0) FROM wallets WHERE user_id = ?").bind(id)
+    let balance: i64 = sqlx::query_scalar("SELECT COALESCE((SELECT balance FROM wallets WHERE user_id = ?), 0)").bind(id)
         .fetch_one(&st.pool).await.map_err(dberr)?;
     let txs: Vec<(i64, String, i64, i64, Option<String>, Option<i64>, String)> = sqlx::query_as(
         "SELECT id, tx_type, amount, balance_after, subject_type, subject_id, \
@@ -323,7 +323,7 @@ async fn ustadz_detail(cu: CurrentUser, State(st): State<AppState>, Path(id): Pa
         .bind(id).fetch_all(&st.pool).await.map_err(dberr)?;
     let bo_json: Vec<_> = bo.iter().map(|b| json!({ "off_date": b.0, "note": b.1 })).collect();
     // saldo penghasilan + penarikan terakhir
-    let balance: i64 = sqlx::query_scalar("SELECT COALESCE(balance,0) FROM wallets WHERE user_id = ?").bind(id)
+    let balance: i64 = sqlx::query_scalar("SELECT COALESCE((SELECT balance FROM wallets WHERE user_id = ?), 0)").bind(id)
         .fetch_one(&st.pool).await.map_err(dberr)?;
     let pays: Vec<(i64, i64, i64, String, String, String, String, Option<String>)> = sqlx::query_as(
         "SELECT id, amount, fee, bank_name, bank_account_no, bank_account_name, status, \
