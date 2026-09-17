@@ -55,3 +55,15 @@ pub async fn delete_device(cu: CurrentUser, State(st): State<AppState>, Path(id)
     svc::delete_device(&st.pool, cu.user_id, id).await?;
     Ok(ok(json!({ "deleted": true }), StatusCode::OK))
 }
+
+pub async fn get_home_point(cu: CurrentUser, State(st): State<AppState>) -> Result<axum::response::Response, AppError> {
+    cu.require_active()?;
+    let d = svc::get_home_point(&st.pool, cu.user_id).await?;
+    Ok(ok(d, StatusCode::OK))
+}
+
+pub async fn put_home_point(cu: CurrentUser, State(st): State<AppState>, Json(req): Json<crate::modules::users::dto::HomePointReq>) -> Result<axum::response::Response, AppError> {
+    cu.require_active()?;
+    svc::put_home_point(&st.pool, cu.user_id, req).await?;
+    Ok(ok(json!({ "updated": true }), StatusCode::OK))
+}

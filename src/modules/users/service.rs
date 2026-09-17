@@ -167,3 +167,24 @@ pub async fn progress_summary(pool: &MySqlPool, user_id: i64) -> Result<Progress
         last_read: last.map(|(s, n, a, p)| LastRead { surah_id: s, surah_name: n, ayah_number: a, page: p }),
     })
 }
+
+pub async fn get_home_point(pool: &MySqlPool, user_id: i64) -> Result<Option<crate::modules::users::dto::HomePointOut>, AppError> {
+    let r: Option<(f64, f64, Option<String>)> = sqlx::query_as(
+        "SELECT CAST(lat AS DOUBLE), CAST(lng AS DOUBLE), address_label FROM user_home_points WHERE user_id = ?")
+        .bind(user_id).fetch_optional(pool).await.map_err(dberr)?;
+    Ok(r.map(|(lat, lng, label)| crate::modules::users::dto::HomePointOut {
+        lat, lng, address_label: label,
+    }))
+}
+
+pub async fn put_home_point(pool: &MySqlPool, user_id: i64, req: crate::modules::users::dto::HomePointReq) -> Result<(), AppError> {
+    if !(-90.0..=90.0).contains(&req.lat) || !(-180.0..=180.0).contains(&req.lng) {
+        return Err(AppError::Unprocessable("koordinat tidak valid".into()));
+    }
+    sqlx::query(
+        "INSERT INTO user_home_points (user_id, lat, lng, address_label) VALUES (?, ?, ?, ?)          ON DUPLICATE KEY UPDATE lat = VALUES(lat), lng = VALUES(lng), address_label = VALUES(address_label)")
+        .bind(user_id).bind(req.lat).bind(req.lng)
+        .bind(req.address_label.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+        .execute(pool).await.map_err(dberr)?;
+    Ok(())
+}

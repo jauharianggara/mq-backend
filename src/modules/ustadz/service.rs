@@ -137,3 +137,23 @@ pub async fn put_bank(pool: &MySqlPool, user_id: i64, req: crate::modules::ustad
         .execute(pool).await.map_err(dberr)?;
     Ok(())
 }
+
+pub async fn get_point(pool: &MySqlPool, user_id: i64) -> Result<crate::modules::ustadz::dto::UstadzPointOut, AppError> {
+    let r: (Option<f64>, Option<f64>, Option<String>) = sqlx::query_as(
+        "SELECT CAST(point_lat AS DOUBLE), CAST(point_lng AS DOUBLE), point_label FROM ustadz_profiles WHERE user_id = ?")
+        .bind(user_id).fetch_one(pool).await.map_err(dberr)?;
+    Ok(crate::modules::ustadz::dto::UstadzPointOut { lat: r.0, lng: r.1, label: r.2 })
+}
+
+pub async fn put_point(pool: &MySqlPool, user_id: i64, req: crate::modules::ustadz::dto::UstadzPointReq) -> Result<(), AppError> {
+    if !(-90.0..=90.0).contains(&req.lat) || !(-180.0..=180.0).contains(&req.lng) {
+        return Err(AppError::Unprocessable("koordinat tidak valid".into()));
+    }
+    sqlx::query(
+        "UPDATE ustadz_profiles SET point_lat = ?, point_lng = ?, point_label = ? WHERE user_id = ?")
+        .bind(req.lat).bind(req.lng)
+        .bind(req.label.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+        .bind(user_id)
+        .execute(pool).await.map_err(dberr)?;
+    Ok(())
+}

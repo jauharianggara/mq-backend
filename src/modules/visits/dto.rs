@@ -53,10 +53,11 @@ pub struct CreateVisitReq {
     /// "HH:MM" (WIB) — wajib dari daftar /visits/slots
     pub start_time: String,
     pub duration_hours: i64,
-    pub lat: f64,
-    pub lng: f64,
+    /// kosong = pakai titik rumah santri yang tersimpan
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
     pub accuracy_m: Option<i16>,
-    pub address_label: String,
+    pub address_label: Option<String>,
     pub note: Option<String>,
 }
 

@@ -331,11 +331,10 @@ pub async fn nearby(state: &AppState, lat: f64, lng: f64) -> Result<Vec<NearbyUs
         return Err(AppError::Forbidden("modul Pesan Ustadz sedang nonaktif".into()));
     }
     let radius = setting_i64(&state.pool, "visit_radius_km", 5).await.clamp(1, 50) as f64;
-    let fresh_h = setting_i64(&state.pool, "visit_location_fresh_hours", 6).await;
     let dlat = radius / 111.0;
     let dlng = radius / (111.0 * lat.to_radians().cos().max(0.2));
     let rows: Vec<(i64, String, f64, f64, i64, Option<f64>, i64)> = sqlx::query_as(&format!(
-        "SELECT u.id, COALESCE(NULLIF(upn.full_name,''),'Ustadz'), CAST(ul.lat AS DOUBLE), CAST(ul.lng AS DOUBLE), \
+        "SELECT u.id, COALESCE(NULLIF(upn.full_name,''),'Ustadz'), CAST(up.point_lat AS DOUBLE), CAST(up.point_lng AS DOUBLE), \
          vs.price_per_hour, \
          (SELECT CAST(AVG(vr.rating) AS DOUBLE) FROM visit_reviews vr WHERE vr.reviewee_id = u.id \
             AND vr.direction = 'SANTRI_TO_USTADZ' AND vr.revealed_at IS NOT NULL AND vr.hidden = 0), \
@@ -345,10 +344,9 @@ pub async fn nearby(state: &AppState, lat: f64, lng: f64) -> Result<Vec<NearbyUs
          JOIN user_profiles upn ON upn.user_id = u.id \
          JOIN ustadz_profiles up ON up.user_id = u.id AND up.verified_at IS NOT NULL \
          JOIN ustadz_visit_settings vs ON vs.ustadz_id = u.id AND vs.is_accepting = 1 \
-         JOIN user_locations ul ON ul.user_id = u.id \
-           AND ul.recorded_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL {fresh_h} HOUR) \
          WHERE u.status = 'ACTIVE' \
-           AND ul.lat BETWEEN ? AND ? AND ul.lng BETWEEN ? AND ? \
+           AND up.point_lat IS NOT NULL AND up.point_lng IS NOT NULL 
+           AND up.point_lat BETWEEN ? AND ? AND up.point_lng BETWEEN ? AND ? \
            AND (SELECT COUNT(*) FROM ustadz_availability_slots s WHERE s.ustadz_id = u.id) > 0"))
         .bind(lat - dlat).bind(lat + dlat)
         .bind(lng - dlng).bind(lng + dlng)
@@ -480,12 +478,30 @@ pub async fn create_visit(
     if !avail.contains(&hhmm) {
         return Err(AppError::Unprocessable(format!("jam {hhmm} tidak tersedia — pilih jam dari daftar")));
     }
+    // titik kunjungan: bawaan request; kalau kosong pakai titik rumah santri
+    let (visit_lat, visit_lng, visit_label) = match (req.lat, req.lng) {
+        (Some(la), Some(ln)) => (la, ln, req.address_label.clone().or(Some("Titik kunjungan".into()))),
+        _ => {
+            let hp: Option<(f64, f64, Option<String>)> = sqlx::query_as(
+                "SELECT CAST(lat AS DOUBLE), CAST(lng AS DOUBLE), address_label FROM user_home_points WHERE user_id = ?")
+                .bind(user_id).fetch_optional(&state.pool).await.map_err(dberr)?;
+            match hp {
+                Some((la, ln, lbl)) => (la, ln, Some(lbl.unwrap_or_else(|| "Titik rumah".into()))),
+                None => return Err(AppError::Unprocessable(
+                    "set titik rumah Anda dulu (Profil > Data Saya > Titik Rumah)".into())),
+            }
+        }
+    };
+    let addr_label: String = req.address_label.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or(visit_label)
+        .unwrap_or_default();
     let radius = setting_i64(&state.pool, "visit_radius_km", 5).await.clamp(1, 50) as f64;
     if let Some((ulat, ulng)) = sqlx::query_as::<_, (f64, f64)>(
-        "SELECT CAST(ul.lat AS DOUBLE), CAST(ul.lng AS DOUBLE) FROM user_locations ul WHERE ul.user_id = ?")
+        "SELECT CAST(point_lat AS DOUBLE), CAST(point_lng AS DOUBLE) FROM ustadz_profiles WHERE user_id = ? AND point_lat IS NOT NULL")
         .bind(req.ustadz_id).fetch_optional(&state.pool).await.map_err(dberr)?
     {
-        let dist = haversine_km(req.lat, req.lng, ulat, ulng);
+        let dist = haversine_km(visit_lat, visit_lng, ulat, ulng);
         if dist > radius {
             return Err(AppError::Unprocessable(format!(
                 "lokasi Anda di luar radius layanan ustadz ({:.1} km > {radius} km)", dist.ceil())));
@@ -515,7 +531,7 @@ pub async fn create_visit(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'REQUESTED', \
          DATE_ADD(UTC_TIMESTAMP(), INTERVAL (SELECT CAST(value AS UNSIGNED) FROM settings WHERE `key`='visit_invoice_duration_sec') SECOND))")
         .bind(user_id).bind(req.ustadz_id).bind(sched_utc).bind(req.duration_hours)
-        .bind(req.lat).bind(req.lng).bind(req.address_label.trim())
+        .bind(visit_lat).bind(visit_lng).bind(addr_label)
         .bind(req.note.as_deref().map(str::trim).filter(|s| !s.is_empty()))
         .bind(idem_key).bind(price_per_hour).bind(price_total)
         .execute(&mut *tx).await;

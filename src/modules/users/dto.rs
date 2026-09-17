@@ -64,3 +64,17 @@ pub struct MyProfileOut {
     pub bio: Option<String>,
     pub photo_media_id: Option<i64>,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct HomePointReq {
+    pub lat: f64,
+    pub lng: f64,
+    pub address_label: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HomePointOut {
+    pub lat: f64,
+    pub lng: f64,
+    pub address_label: Option<String>,
+}

@@ -61,3 +61,17 @@ pub struct BankAccountOut {
     pub bank_account_no: Option<String>,
     pub bank_account_name: Option<String>,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct UstadzPointReq {
+    pub lat: f64,
+    pub lng: f64,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UstadzPointOut {
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    pub label: Option<String>,
+}
