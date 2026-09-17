@@ -25,6 +25,8 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/settings/{key}", put(settings_put))
         .route("/admin/audit-logs", get(audit_list))
         .route("/admin/users", get(users_list))
+        .route("/admin/santri", get(santri_list))
+        .route("/admin/ustadz", get(ustadz_list))
         .route("/admin/users/{id}", patch(users_patch))
 }
 
@@ -144,6 +146,85 @@ async fn users_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Query
             "lng": r.12,
             "label": r.10,
         })),
+    })).collect();
+    Ok(ok(items, StatusCode::OK))
+}
+
+// ===================== daftar khusus: SANTRI & USTADZ (field beda per jenis) =====================
+
+#[allow(clippy::type_complexity)]
+async fn santri_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, AppError> {
+    cu.require("users.read")?;
+    let status = q.get("status").cloned();
+    let qq = q.get("q").map(|s| format!("%{s}%"));
+    let cursor: Option<i64> = q.get("cursor").and_then(|v| v.parse().ok());
+    let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(20).clamp(1, 100);
+    let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>, String, Option<String>, i64, i64, i64)> = sqlx::query_as(
+        "SELECT u.id, COALESCE(NULLIF(up.full_name,''),'(tanpa nama)'), u.email, u.phone, up.city, u.status, \
+         DATE_FORMAT(u.last_login_at, '%Y-%m-%dT%H:%i:%sZ'), COALESCE(w.balance, 0), \
+         (SELECT COUNT(DISTINCT kp.campaign_id) FROM khatmil_participants kp \
+            JOIN khatmil_campaigns kc ON kc.id = kp.campaign_id AND kc.status = 'ACTIVE' WHERE kp.user_id = u.id), \
+         (SELECT COUNT(*) FROM ustadz_visits v WHERE v.user_id = u.id AND v.status IN ('COMPLETED','REVIEWED')) \
+         FROM users u \
+         JOIN user_roles ur ON ur.user_id = u.id \
+         JOIN roles r ON r.id = ur.role_id AND r.code = 'SANTRI' \
+         LEFT JOIN user_profiles up ON up.user_id = u.id \
+         LEFT JOIN wallets w ON w.user_id = u.id \
+         WHERE (? IS NULL OR u.id < ?) AND (? IS NULL OR u.status = ?) \
+           AND (? IS NULL OR u.email LIKE ? OR u.phone LIKE ? \
+                OR EXISTS (SELECT 1 FROM user_profiles upn2 WHERE upn2.user_id = u.id AND upn2.full_name LIKE ?)) \
+         ORDER BY u.id DESC LIMIT ?")
+        .bind(cursor).bind(cursor).bind(status.as_deref()).bind(status.as_deref())
+        .bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(limit + 1)
+        .fetch_all(&st.pool).await.map_err(dberr)?;
+    let items: Vec<_> = rows.iter().take(limit as usize).map(|r| json!({
+        "id": r.0, "full_name": r.1, "email": r.2, "phone": r.3, "city": r.4,
+        "status": r.5, "last_login_at": r.6, "deposit": r.7,
+        "khatmil_aktif": r.8, "kunjungan_selesai": r.9,
+    })).collect();
+    Ok(ok(items, StatusCode::OK))
+}
+
+#[allow(clippy::type_complexity)]
+async fn ustadz_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, AppError> {
+    cu.require("users.read")?;
+    let status = q.get("status").cloned();
+    let qq = q.get("q").map(|s| format!("%{s}%"));
+    let cursor: Option<i64> = q.get("cursor").and_then(|v| v.parse().ok());
+    let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(20).clamp(1, 100);
+    let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>, String, Option<String>, i8, Option<String>, Option<i8>, Option<i64>, Option<f64>, i64, i64, i64)> = sqlx::query_as(
+        "SELECT u.id, COALESCE(NULLIF(up.full_name,''),'(tanpa nama)'), u.email, u.phone, up.city, u.status, \
+         DATE_FORMAT(u.last_login_at, '%Y-%m-%dT%H:%i:%sZ'), \
+         (up2.verified_at IS NOT NULL), up2.pendidikan_terakhir, vs.is_accepting, vs.price_per_hour, \
+         CAST((SELECT AVG(vr.rating) FROM visit_reviews vr \
+            WHERE vr.reviewee_id = u.id AND vr.direction = 'SANTRI_TO_USTADZ' \
+              AND vr.revealed_at IS NOT NULL AND vr.hidden = 0) AS DOUBLE), \
+         (SELECT COUNT(*) FROM visit_reviews vr \
+            WHERE vr.reviewee_id = u.id AND vr.direction = 'SANTRI_TO_USTADZ' \
+              AND vr.revealed_at IS NOT NULL AND vr.hidden = 0), \
+         COALESCE(w.balance, 0), \
+         (SELECT COUNT(*) FROM ustadz_visits v WHERE v.ustadz_id = u.id AND v.status IN ('COMPLETED','REVIEWED')) \
+         FROM users u \
+         JOIN user_roles ur ON ur.user_id = u.id \
+         JOIN roles r ON r.id = ur.role_id AND r.code = 'USTADZ' \
+         LEFT JOIN user_profiles up ON up.user_id = u.id \
+         LEFT JOIN ustadz_profiles up2 ON up2.user_id = u.id \
+         LEFT JOIN ustadz_visit_settings vs ON vs.ustadz_id = u.id \
+         LEFT JOIN wallets w ON w.user_id = u.id \
+         WHERE (? IS NULL OR u.id < ?) AND (? IS NULL OR u.status = ?) \
+           AND (? IS NULL OR u.email LIKE ? OR u.phone LIKE ? \
+                OR EXISTS (SELECT 1 FROM user_profiles upn2 WHERE upn2.user_id = u.id AND upn2.full_name LIKE ?)) \
+         ORDER BY u.id DESC LIMIT ?")
+        .bind(cursor).bind(cursor).bind(status.as_deref()).bind(status.as_deref())
+        .bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(limit + 1)
+        .fetch_all(&st.pool).await.map_err(dberr)?;
+    let items: Vec<_> = rows.iter().take(limit as usize).map(|r| json!({
+        "id": r.0, "full_name": r.1, "email": r.2, "phone": r.3, "city": r.4,
+        "status": r.5, "last_login_at": r.6,
+        "verified": r.7 != 0, "pendidikan": r.8,
+        "is_accepting": r.9.map(|v| v != 0), "price_per_hour": r.10,
+        "rating_avg": r.11, "rating_count": r.12,
+        "saldo_penghasilan": r.13, "kunjungan_selesai": r.14,
     })).collect();
     Ok(ok(items, StatusCode::OK))
 }

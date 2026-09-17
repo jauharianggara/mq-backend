@@ -176,25 +176,24 @@ pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail
              LEFT JOIN khatmil_progress pg ON pg.assignment_id = a.id \
              ORDER BY j.j")
         .bind(id).bind(id).fetch_all(pool).await.map_err(dberr)?;
-    let juz_map = rows.into_iter().map(|r| JuzSlot {
-        juz: r.0, status: r.1, owner_name: r.2, pages_read: r.3, minutes_read: r.4,
-        current_surah: r.5, current_ayah: r.6, completed_at: r.7,
-        progress_pct: pct(r.9.unwrap_or(0), r.8),
-    }).collect();
-
     // progres keseluruhan = rata-rata progres BACAAN juz yang terisi
     // (juz COMPLETED dihitung penuh; juz IN_PROGRESS memakai posisi terakhir)
     let (mut total_read, mut total_all) = (0i64, 0i64);
     for r in rows.iter() {
         if r.8 <= 0 { continue; }
         total_all += r.8;
-        if r.1 == "COMPLETED" {
+        if r.1.as_deref() == Some("COMPLETED") {
             total_read += r.8;
         } else {
             total_read += r.9.unwrap_or(0);
         }
     }
     let pctv = pct(total_read, total_all);
+    let juz_map = rows.into_iter().map(|r| JuzSlot {
+        juz: r.0, status: r.1, owner_name: r.2, pages_read: r.3, minutes_read: r.4,
+        current_surah: r.5, current_ayah: r.6, completed_at: r.7,
+        progress_pct: pct(r.9.unwrap_or(0), r.8),
+    }).collect();
     let groups: Vec<(i64, i64, i64, Option<String>)> = sqlx::query_as(
         "SELECT g.id, g.group_no,          (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.group_id = g.id AND a.active_marker IS NOT NULL),          (SELECT COALESCE(NULLIF(upn.full_name,''),'Ustadz') FROM khatmil_groups g2             LEFT JOIN user_profiles upn ON upn.user_id = g2.ustadz_id WHERE g2.id = g.id)          FROM khatmil_groups g WHERE g.campaign_id = ? ORDER BY g.group_no")
         .bind(id).fetch_all(pool).await.map_err(dberr)?;
@@ -207,7 +206,7 @@ pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail
         campaign: CampaignOut {
             id: cid, slug, name, description: descr, max_participants: maxp, mode, status, target_khataman: target,
             min_minutes_per_juz: minmin, require_manual_verification: rmv != 0,
-            participants, juz_completed: completed, progress_pct: pctv,
+            participants, juz_completed: completed, progress_pct: pctv.unwrap_or(0.0),
             period_start: ps.clone(), period_end: pe.clone(),
         },
         juz_map, groups, period_start: ps, period_end: pe,
