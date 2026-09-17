@@ -181,6 +181,14 @@ pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail
         current_surah: r.5, current_ayah: r.6, completed_at: r.7,
         progress_pct: pct(r.9.unwrap_or(0), r.8),
     }).collect();
+    let groups: Vec<(i64, i64, i64, Option<String>)> = sqlx::query_as(
+        "SELECT g.id, g.group_no,          (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.group_id = g.id AND a.active_marker IS NOT NULL),          (SELECT COALESCE(NULLIF(upn.full_name,''),'Ustadz') FROM khatmil_groups g2             LEFT JOIN user_profiles upn ON upn.user_id = g2.ustadz_id WHERE g2.id = g.id)          FROM khatmil_groups g WHERE g.campaign_id = ? ORDER BY g.group_no")
+        .bind(id).fetch_all(pool).await.map_err(dberr)?;
+    let groups: Vec<crate::modules::khatmil::dto::GroupLite> = groups.into_iter()
+        .map(|(id, no, cnt, pemb)| crate::modules::khatmil::dto::GroupLite {
+            id, group_no: no, member_count: cnt, pembina: pemb })
+        .collect();
+
     Ok(CampaignDetail {
         campaign: CampaignOut {
             id: cid, slug, name, description: descr, max_participants: maxp, mode, status, target_khataman: target,
@@ -188,7 +196,7 @@ pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail
             participants, juz_completed: completed, progress_pct: pctv,
             period_start: ps.clone(), period_end: pe.clone(),
         },
-        juz_map, period_start: ps, period_end: pe,
+        juz_map, groups, period_start: ps, period_end: pe,
     })
 }
 
@@ -220,7 +228,7 @@ pub async fn join(pool: &MySqlPool, user_id: i64, campaign_id: i64) -> Result<()
     Ok(())
 }
 
-pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Option<i64>) -> Result<AssignmentOut, AppError> {
+pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Option<i64>, group_req: Option<i64>) -> Result<AssignmentOut, AppError> {
     let (status, _minmin): (String, i64) = sqlx::query_as(
         "SELECT status, min_minutes_per_juz FROM khatmil_campaigns WHERE id = ?")
         .bind(campaign_id).fetch_optional(pool).await.map_err(dberr)?
@@ -249,10 +257,29 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Op
         return Err(AppError::Unprocessable("juz 1-30".into()));
     }
 
+    // ATURAN: kelompok — pilih sendiri bila campaign punya >1 kelompok
+    crate::modules::khatmil::penugasan::ensure_groups(pool, campaign_id).await?;
+    let groups: Vec<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT g.id, g.group_no,          (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.group_id = g.id AND a.active_marker IS NOT NULL)          FROM khatmil_groups g WHERE g.campaign_id = ? ORDER BY g.group_no")
+        .bind(campaign_id).fetch_all(pool).await.map_err(dberr)?;
+    let group_id: i64 = if groups.len() <= 1 {
+        groups.first().map(|g| g.0).ok_or_else(|| {
+            AppError::Conflict("kelompok belum tersedia - hubungi pengelola".into())
+        })?
+    } else {
+        let gid = group_req.ok_or_else(|| AppError::Unprocessable("pilih kelompok dulu".into()))?;
+        let (_, _, cnt) = *groups.iter().find(|g| g.0 == gid)
+            .ok_or_else(|| AppError::Unprocessable("kelompok tidak ada di campaign ini".into()))?;
+        if cnt >= 30 {
+            return Err(AppError::Conflict("kelompok sudah penuh (30 santri)".into()));
+        }
+        gid
+    };
+
     // CLAIM = INSERT murni — partial-unique marker-aktif (generated col) = jaminan final (0009)
     let ins = sqlx::query(
-        "INSERT INTO khatmil_juz_assignments (campaign_id, participant_id, juz) VALUES (?, ?, ?)")
-        .bind(campaign_id).bind(participant.0).bind(juz)
+        "INSERT INTO khatmil_juz_assignments (campaign_id, participant_id, juz, group_id) VALUES (?, ?, ?, ?)")
+        .bind(campaign_id).bind(participant.0).bind(juz).bind(group_id)
         .execute(pool).await;
     let ins = match ins {
         Ok(i) => i,
@@ -269,7 +296,7 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Op
     let name: (String,) = sqlx::query_as("SELECT name FROM khatmil_campaigns WHERE id = ?")
         .bind(campaign_id).fetch_one(pool).await.map_err(dberr)?;
     Ok(AssignmentOut {
-        id: aid, campaign_id, campaign_name: name.0, juz, status: "ASSIGNED".into(),
+        id: aid, campaign_id, campaign_name: name.0, juz, group_id, status: "ASSIGNED".into(),
         due_at: None, pages_read: 0, minutes_read: 0, verification: "PENDING".into(),
         current_surah: None, current_ayah: None, read_ayat: None, juz_total_ayat: total, progress_pct: None,
     })
@@ -280,9 +307,9 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Op
 // =====================================================================
 
 async fn assignment_out(pool: &MySqlPool, assignment_id: i64) -> Result<AssignmentOut, AppError> {
-    let r: (i64, i64, String, i64, String, Option<String>, i64, i64, String, Option<i64>, Option<i64>, i64, Option<i64>) =
+    let r: (i64, i64, String, i64, i64, String, Option<String>, i64, i64, String, Option<i64>, Option<i64>, i64, Option<i64>) =
         sqlx::query_as(
-            "SELECT a.id, a.campaign_id, c.name, a.juz, a.status, DATE_FORMAT(a.due_at, '%Y-%m-%dT%H:%i:%sZ'), \
+            "SELECT a.id, a.campaign_id, c.name, a.juz, a.group_id, a.status, DATE_FORMAT(a.due_at, '%Y-%m-%dT%H:%i:%sZ'), \
              IFNULL(pg.pages_read, 0), IFNULL(pg.minutes_read, 0), IFNULL(pg.verification, 'PENDING'), \
              pg.current_surah_id, pg.current_ayah, \
              (SELECT COUNT(*) FROM quran_ayahs qa WHERE qa.juz = a.juz), \
@@ -297,10 +324,10 @@ async fn assignment_out(pool: &MySqlPool, assignment_id: i64) -> Result<Assignme
         .bind(assignment_id).fetch_optional(pool).await.map_err(dberr)?
         .ok_or_else(|| AppError::NotFound("assignment tidak ada".into()))?;
     Ok(AssignmentOut {
-        id: r.0, campaign_id: r.1, campaign_name: r.2, juz: r.3, status: r.4, due_at: r.5,
-        pages_read: r.6, minutes_read: r.7, verification: r.8,
-        current_surah: r.9, current_ayah: r.10, read_ayat: r.12, juz_total_ayat: r.11,
-        progress_pct: pct(r.12.unwrap_or(0), r.11),
+        id: r.0, campaign_id: r.1, campaign_name: r.2, juz: r.3, group_id: r.4, status: r.5, due_at: r.6,
+        pages_read: r.7, minutes_read: r.8, verification: r.9,
+        current_surah: r.10, current_ayah: r.11, read_ayat: r.13, juz_total_ayat: r.12,
+        progress_pct: pct(r.13.unwrap_or(0), r.12),
     })
 }
 
@@ -404,9 +431,9 @@ pub async fn post_progress(
 // =====================================================================
 
 pub async fn my_assignments(pool: &MySqlPool, user_id: i64) -> Result<Vec<AssignmentOut>, AppError> {
-    let rows: Vec<(i64, i64, String, i64, String, Option<String>, i64, i64, String, Option<i64>, Option<i64>, i64, Option<i64>)> =
+    let rows: Vec<(i64, i64, String, i64, i64, String, Option<String>, i64, i64, String, Option<i64>, Option<i64>, i64, Option<i64>)> =
         sqlx::query_as(
-            "SELECT a.id, a.campaign_id, c.name, a.juz, a.status, DATE_FORMAT(a.due_at, '%Y-%m-%dT%H:%i:%sZ'), \
+            "SELECT a.id, a.campaign_id, c.name, a.juz, a.group_id, a.status, DATE_FORMAT(a.due_at, '%Y-%m-%dT%H:%i:%sZ'), \
              IFNULL(pg.pages_read, 0), IFNULL(pg.minutes_read, 0), IFNULL(pg.verification, 'PENDING'), \
              pg.current_surah_id, pg.current_ayah, \
              (SELECT COUNT(*) FROM quran_ayahs qa WHERE qa.juz = a.juz), \
@@ -421,10 +448,10 @@ pub async fn my_assignments(pool: &MySqlPool, user_id: i64) -> Result<Vec<Assign
              ORDER BY a.campaign_id, a.juz")
         .bind(user_id).fetch_all(pool).await.map_err(dberr)?;
     Ok(rows.into_iter().map(|r| AssignmentOut {
-        id: r.0, campaign_id: r.1, campaign_name: r.2, juz: r.3, status: r.4, due_at: r.5,
-        pages_read: r.6, minutes_read: r.7, verification: r.8,
-        current_surah: r.9, current_ayah: r.10, read_ayat: r.12, juz_total_ayat: r.11,
-        progress_pct: pct(r.12.unwrap_or(0), r.11),
+        id: r.0, campaign_id: r.1, campaign_name: r.2, juz: r.3, group_id: r.4, status: r.5, due_at: r.6,
+        pages_read: r.7, minutes_read: r.8, verification: r.9,
+        current_surah: r.10, current_ayah: r.11, read_ayat: r.13, juz_total_ayat: r.12,
+        progress_pct: pct(r.13.unwrap_or(0), r.12),
     }).collect())
 }
 

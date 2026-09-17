@@ -1,25 +1,25 @@
 # Graph Report - .  (2026-09-17)
 
 ## Corpus Check
-- 132 files · ~148,310 words
+- 133 files · ~149,378 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 910 nodes · 1330 edges · 77 communities detected
+- 925 nodes · 1348 edges · 78 communities detected
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS
 - Token cost: 0 input · 0 output
-- Edge kinds: contains: 756 · calls: 387 · references: 157 · method: 26 · rationale_for: 4
+- Edge kinds: contains: 770 · calls: 391 · references: 157 · method: 26 · rationale_for: 4
 
 
 ## Input Scope
 - Requested: auto
 - Resolved: committed (source: default-auto)
-- Included files: 132 · Candidates: 421
-- Excluded: 11 untracked · 23914 ignored · 2 sensitive · 0 missing committed
+- Included files: 133 · Candidates: 433
+- Excluded: 14 untracked · 23916 ignored · 2 sensitive · 0 missing committed
 - Recommendation: Use --scope all or graphify.yaml inputs.corpus for a knowledge-base folder.
 
 ## Graph Freshness
-- Built from Git commit: `5575186`
+- Built from Git commit: `8c4b575`
 - Compare this hash to `git rev-parse HEAD` before trusting freshness-sensitive graph output.
 ## God Nodes (most connected - your core abstractions)
 1. `ok()` - 39 edges
@@ -30,15 +30,15 @@
 6. `ustadz_perm()` - 14 edges
 7. `ok()` - 12 edges
 8. `ok()` - 12 edges
-9. `AppState` - 11 edges
-10. `ok()` - 10 edges
+9. `ok()` - 12 edges
+10. `AppState` - 11 edges
 
 ## Surprising Connections (you probably didn't know these)
 - None detected - all connections are within the same source files.
 
 ## Communities
 
-### Community 45 - "Community 45"
+### Community 46 - "Community 46"
 Cohesion: 0.50
 Nodes (7): users, roles, permissions, role_permissions, user_roles, user_devices, user_sessions
 
@@ -50,27 +50,27 @@ Nodes (2): media, users
 Cohesion: 0.80
 Nodes (4): user_profiles, users, media, ustadz_profiles
 
-### Community 35 - "Community 35"
+### Community 37 - "Community 37"
 Cohesion: 0.42
 Nodes (8): quran_surahs, quran_juzs, quran_ayahs, quran_translations, quran_audio_files, quran_words, tajwid_rules, tajwid_ayah_annotations
 
-### Community 46 - "Community 46"
+### Community 47 - "Community 47"
 Cohesion: 0.50
 Nodes (7): user_reading_progress, users, quran_ayahs, bookmarks, learning_materials, tajwid_rules, media
 
-### Community 52 - "Community 52"
+### Community 53 - "Community 53"
 Cohesion: 0.67
 Nodes (6): memorization_submissions, users, quran_surahs, media, memorization_reviews, memorization_progress
 
-### Community 47 - "Community 47"
+### Community 48 - "Community 48"
 Cohesion: 0.61
 Nodes (7): khatmil_campaigns, users, khatmil_participants, khatmil_juz_assignments, khatmil_progress, khatmil_progress_events, khatmil_completions
 
-### Community 28 - "Community 28"
+### Community 31 - "Community 31"
 Cohesion: 0.44
 Nodes (9): question_categories, ustadz_specializations, ustadz_profiles, questions, users, question_messages, media, question_assignments (+1 more)
 
-### Community 48 - "Community 48"
+### Community 49 - "Community 49"
 Cohesion: 0.43
 Nodes (7): article_categories, articles, media, users, banners, announcements, faqs
 
@@ -82,7 +82,7 @@ Nodes (3): notification_templates, user_notifications, users
 Cohesion: 0.53
 Nodes (5): audit_logs, users, activity_events, settings, scheduled_jobs
 
-### Community 40 - "Community 40"
+### Community 41 - "Community 41"
 Cohesion: 0.50
 Nodes (7): users, roles, permissions, role_permissions, user_roles, user_devices, user_sessions
 
@@ -94,27 +94,27 @@ Nodes (2): media, users
 Cohesion: 0.80
 Nodes (4): user_profiles, users, media, ustadz_profiles
 
-### Community 34 - "Community 34"
+### Community 36 - "Community 36"
 Cohesion: 0.42
 Nodes (8): quran_surahs, quran_juzs, quran_ayahs, quran_translations, quran_audio_files, quran_words, tajwid_rules, tajwid_ayah_annotations
 
-### Community 41 - "Community 41"
+### Community 42 - "Community 42"
 Cohesion: 0.50
 Nodes (7): user_reading_progress, users, quran_ayahs, bookmarks, learning_materials, tajwid_rules, media
 
-### Community 51 - "Community 51"
+### Community 52 - "Community 52"
 Cohesion: 0.67
 Nodes (6): memorization_submissions, users, quran_surahs, media, memorization_reviews, memorization_progress
 
-### Community 42 - "Community 42"
+### Community 43 - "Community 43"
 Cohesion: 0.61
 Nodes (7): khatmil_campaigns, users, khatmil_participants, khatmil_juz_assignments, khatmil_progress, khatmil_progress_events, khatmil_completions
 
-### Community 26 - "Community 26"
+### Community 29 - "Community 29"
 Cohesion: 0.56
 Nodes (9): question_categories, ustadz_profiles, users, questions, media, question_messages, ustadz_specializations, question_assignments (+1 more)
 
-### Community 43 - "Community 43"
+### Community 44 - "Community 44"
 Cohesion: 0.43
 Nodes (7): article_categories, articles, media, users, banners, announcements, faqs
 
@@ -126,7 +126,7 @@ Nodes (3): notification_templates, user_notifications, users
 Cohesion: 0.53
 Nodes (5): audit_logs, users, activity_events, settings, scheduled_jobs
 
-### Community 27 - "Community 27"
+### Community 30 - "Community 30"
 Cohesion: 0.49
 Nodes (9): visit_service_types, users, user_locations, ustadz_visit_settings, ustadz_visit_services, ustadz_visits, ustadz_visit_status_history, visit_messages (+1 more)
 
@@ -142,13 +142,17 @@ Nodes (4): khatmil_groups, khatmil_campaigns, users, khatmil_juz_assignments
 Cohesion: 1.00
 Nodes (2): admin_wallet_adjustments, users
 
-### Community 44 - "Community 44"
+### Community 45 - "Community 45"
 Cohesion: 0.46
 Nodes (7): wallets, users, ustadz_visits, wallet_transactions, payout_requests, ustadz_availability_slots, ustadz_blackout_dates
 
 ### Community 92 - "Community 92"
 Cohesion: 1.00
 Nodes (1): ustadz_bank_accounts
+
+### Community 93 - "Community 93"
+Cohesion: 1.00
+Nodes (1): user_home_points
 
 ### Community 80 - "Community 80"
 Cohesion: 1.00
@@ -166,7 +170,7 @@ Nodes (3): q(), one(), main()
 Cohesion: 0.67
 Nodes (1): Person
 
-### Community 32 - "Community 32"
+### Community 34 - "Community 34"
 Cohesion: 0.58
 Nodes (8): main(), ensure_cleanup_job(), ensure_visit_jobs(), ensure_khatmil_job(), recover_stale(), claim_next(), execute(), finish()
 
@@ -174,27 +178,27 @@ Nodes (8): main(), ensure_cleanup_job(), ensure_visit_jobs(), ensure_khatmil_job
 Cohesion: 0.50
 Nodes (2): AppConfig, S3Config
 
-### Community 54 - "Community 54"
+### Community 55 - "Community 55"
 Cohesion: 0.29
 Nodes (1): Storage
 
-### Community 18 - "Community 18"
+### Community 20 - "Community 20"
 Cohesion: 0.22
 Nodes (3): CreateInvoice, PaymentGateway, Invoice
 
-### Community 39 - "Community 39"
+### Community 40 - "Community 40"
 Cohesion: 0.32
 Nodes (3): CurrentUser, OptionalUser, try_current_user()
 
-### Community 23 - "Community 23"
+### Community 26 - "Community 26"
 Cohesion: 0.33
 Nodes (7): ok(), dashboard(), settings_list(), settings_put(), audit_list(), users_list(), users_patch()
 
-### Community 17 - "Community 17"
+### Community 19 - "Community 19"
 Cohesion: 0.18
 Nodes (10): RegisterReq, LoginReq, RefreshReq, UserPublic, TokenPair, RegisterResp, VerifyEmailReq, ForgotReq (+2 more)
 
-### Community 14 - "Community 14"
+### Community 15 - "Community 15"
 Cohesion: 0.29
 Nodes (12): ok(), register(), login(), refresh(), logout(), logout_all(), verify_email(), resend_verification() (+4 more)
 
@@ -202,23 +206,23 @@ Nodes (12): ok(), register(), login(), refresh(), logout(), logout_all(), verify
 Cohesion: 0.20
 Nodes (15): hash_password(), verify_password(), user_public(), register(), create_action_token(), consume_action_token(), verify_email(), login() (+7 more)
 
-### Community 13 - "Community 13"
+### Community 14 - "Community 14"
 Cohesion: 0.30
 Nodes (11): ok(), pub_banners_h(), pub_articles_h(), pub_article_h(), pub_announcements_h(), pub_faqs_h(), find_entity(), audit() (+3 more)
 
-### Community 38 - "Community 38"
+### Community 39 - "Community 39"
 Cohesion: 0.36
 Nodes (5): ok(), santri_home(), ustadz_home(), AppVersionQ, app_version()
 
-### Community 12 - "Community 12"
-Cohesion: 0.13
-Nodes (11): CampaignUpsertReq, CampaignOut, JuzSlot, CampaignDetail, ClaimReq, AssignmentOut, ProgressReq, JuzActiveOut (+3 more)
+### Community 11 - "Community 11"
+Cohesion: 0.12
+Nodes (12): CampaignUpsertReq, CampaignOut, JuzSlot, CampaignDetail, ClaimReq, AssignmentOut, ProgressReq, JuzActiveOut (+4 more)
 
 ### Community 6 - "Community 6"
 Cohesion: 0.17
 Nodes (20): ok(), ListQ, list_campaigns(), create_campaign(), update_campaign(), campaign_detail(), join(), claim() (+12 more)
 
-### Community 24 - "Community 24"
+### Community 27 - "Community 27"
 Cohesion: 0.29
 Nodes (5): notify(), notify_admins(), accept_group(), reject_group(), admin_assign()
 
@@ -230,7 +234,7 @@ Nodes (20): dberr(), juz_bounds(), juz_total_ayat(), ayat_offset(), ensure_posit
 Cohesion: 0.67
 Nodes (2): MaterialOut, PutProgressReq
 
-### Community 19 - "Community 19"
+### Community 21 - "Community 21"
 Cohesion: 0.33
 Nodes (10): ok(), ListQ, list_materials(), get_material(), put_progress(), MaterialUpsertReq, admin_create(), admin_update() (+2 more)
 
@@ -242,19 +246,19 @@ Nodes (3): CreateUploadReq, UploadOut, MediaOut
 Cohesion: 0.70
 Nodes (4): ok(), create_upload(), complete_upload(), get_media()
 
-### Community 33 - "Community 33"
+### Community 35 - "Community 35"
 Cohesion: 0.31
 Nodes (5): mime_allowed(), max_bytes(), magic_ok(), create_upload(), complete_upload()
 
-### Community 50 - "Community 50"
+### Community 51 - "Community 51"
 Cohesion: 0.29
 Nodes (6): SubmitReq, SubmissionOut, SubmissionDetail, ReviewOut, ProgressRow, ReviewReq
 
-### Community 25 - "Community 25"
+### Community 28 - "Community 28"
 Cohesion: 0.38
 Nodes (9): ok(), page(), PageQ, submit(), my_submissions(), my_submission_detail(), my_progress(), queue() (+1 more)
 
-### Community 20 - "Community 20"
+### Community 22 - "Community 22"
 Cohesion: 0.27
 Nodes (6): to_out(), own_audio(), submit(), detail(), media_presign(), review()
 
@@ -262,7 +266,7 @@ Nodes (6): to_out(), own_audio(), submit(), detail(), media_presign(), review()
 Cohesion: 0.33
 Nodes (1): Q
 
-### Community 49 - "Community 49"
+### Community 50 - "Community 50"
 Cohesion: 0.25
 Nodes (7): CategoryOut, CreateQuestionReq, QuestionOut, MessageOut, QuestionThread, SendMessageReq, RejectReq
 
@@ -274,32 +278,32 @@ Nodes (18): ok(), page(), PageQ, ArchiveQ, idem(), categories(), create(), my_qu
 Cohesion: 0.20
 Nodes (19): transition(), create(), find_by_client_key(), q_from_thread(), fetch_q(), access(), thread(), presign_media() (+11 more)
 
-### Community 29 - "Community 29"
+### Community 32 - "Community 32"
 Cohesion: 0.20
 Nodes (9): SurahOut, AyahOut, AudioOut, LastReadOut, PutLastReadReq, AddBookmarkReq, BookmarkOut, JuzAyahOut (+1 more)
 
-### Community 11 - "Community 11"
+### Community 12 - "Community 12"
 Cohesion: 0.20
 Nodes (15): ok(), page(), AyahQ, AudioQ, PageQ, surahs(), ayahs(), audio() (+7 more)
 
-### Community 55 - "Community 55"
-Cohesion: 0.29
-Nodes (6): PatchMeReq, DeviceReq, DeviceOut, ProgressSummary, LastRead, MyProfileOut
-
-### Community 36 - "Community 36"
-Cohesion: 0.42
-Nodes (8): ok(), patch_me(), my_profile(), delete_me(), progress_summary(), register_device(), list_devices(), delete_device()
-
-### Community 30 - "Community 30"
-Cohesion: 0.20
-Nodes (9): SpecializationOut, PutSpecializationsReq, AvailabilityOut, PutAvailabilityReq, UstadzStats, UstadzDetailReq, UstadzDetailOut, BankAccountReq (+1 more)
-
-### Community 22 - "Community 22"
-Cohesion: 0.35
-Nodes (10): ok(), get_specializations(), put_specializations(), get_availability(), put_availability(), stats(), get_detail(), put_detail() (+2 more)
-
-### Community 15 - "Community 15"
+### Community 38 - "Community 38"
 Cohesion: 0.22
+Nodes (8): PatchMeReq, DeviceReq, DeviceOut, ProgressSummary, LastRead, MyProfileOut, HomePointReq, HomePointOut
+
+### Community 24 - "Community 24"
+Cohesion: 0.35
+Nodes (10): ok(), patch_me(), my_profile(), delete_me(), progress_summary(), register_device(), list_devices(), delete_device() (+2 more)
+
+### Community 18 - "Community 18"
+Cohesion: 0.17
+Nodes (11): SpecializationOut, PutSpecializationsReq, AvailabilityOut, PutAvailabilityReq, UstadzStats, UstadzDetailReq, UstadzDetailOut, BankAccountReq (+3 more)
+
+### Community 16 - "Community 16"
+Cohesion: 0.29
+Nodes (12): ok(), get_specializations(), put_specializations(), get_availability(), put_availability(), stats(), get_detail(), put_detail() (+4 more)
+
+### Community 13 - "Community 13"
+Cohesion: 0.18
 Nodes (6): ensure_profile(), get_specializations(), put_specializations(), get_availability(), put_availability(), stats()
 
 ### Community 2 - "Community 2"
@@ -318,7 +322,7 @@ Nodes (7): issue_invoice_for_visit(), mock_url(), apply_visit_paid(), apply_visi
 Cohesion: 0.09
 Nodes (36): dberr(), setting_str(), setting_i64(), visit_enabled(), haversine_km(), notify(), log_history(), notify_admins() (+28 more)
 
-### Community 31 - "Community 31"
+### Community 33 - "Community 33"
 Cohesion: 0.24
 Nodes (3): accept_adjustment(), reject_adjustment(), notify_adjustment_result()
 
@@ -334,7 +338,7 @@ Nodes (4): ensure(), balance(), credit(), debit()
 Cohesion: 0.47
 Nodes (2): AppError, error_shape_konsisten()
 
-### Community 53 - "Community 53"
+### Community 54 - "Community 54"
 Cohesion: 0.38
 Nodes (5): CursorPage, CursorPage<T>, pagination_memotong_dan_cursor(), pagination_habis(), pagination_boundary_persis_limit()
 
@@ -342,12 +346,12 @@ Nodes (5): CursorPage, CursorPage<T>, pagination_memotong_dan_cursor(), paginati
 Cohesion: 0.40
 Nodes (1): Meta
 
-### Community 16 - "Community 16"
+### Community 17 - "Community 17"
 Cohesion: 0.17
 Nodes (1): AppState
 
 ## Knowledge Gaps
-- **143 isolated node(s):** `faqs`, `notification_templates`, `scheduled_jobs`, `faqs`, `notification_templates` (+138 more)
+- **149 isolated node(s):** `faqs`, `notification_templates`, `scheduled_jobs`, `faqs`, `notification_templates` (+144 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **Thin community `Community 79`** (2 nodes): `media`, `users`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
@@ -359,13 +363,15 @@ Nodes (1): AppState
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 92`** (1 nodes): `ustadz_bank_accounts`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
+- **Thin community `Community 93`** (1 nodes): `user_home_points`
+  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 80`** (2 nodes): `db()`, `main()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 75`** (1 nodes): `Person`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 70`** (2 nodes): `AppConfig`, `S3Config`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 54`** (1 nodes): `Storage`
+- **Thin community `Community 55`** (1 nodes): `Storage`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 76`** (2 nodes): `MaterialOut`, `PutProgressReq`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
@@ -375,16 +381,16 @@ Nodes (1): AppState
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 - **Thin community `Community 66`** (1 nodes): `Meta`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 16`** (1 nodes): `AppState`
+- **Thin community `Community 17`** (1 nodes): `AppState`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **What connects `faqs`, `notification_templates`, `scheduled_jobs` to the rest of the system?**
-  _143 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `Community 12` be split into smaller, more focused modules?**
-  _Cohesion score 0.125 - nodes in this community are weakly interconnected._
+  _149 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `Community 11` be split into smaller, more focused modules?**
+  _Cohesion score 0.11764705882352941 - nodes in this community are weakly interconnected._
 - **Should `Community 4` be split into smaller, more focused modules?**
   _Cohesion score 0.14333333333333334 - nodes in this community are weakly interconnected._
 - **Should `Community 2` be split into smaller, more focused modules?**

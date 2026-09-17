@@ -51,12 +51,12 @@ pub async fn join(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i6
 
 pub async fn claim(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>, body: Option<Json<ClaimReq>>) -> Result<Response, AppError> {
     cu.require("khatmil.join")?;
-    let juz = body.and_then(|Json(b)| b.juz);
+    let (juz, group_id) = body.and_then(|Json(b)| Some((b.juz, b.group_id))).unwrap_or((None, None));
     // rate-limit klaim in-process (anti spam; 5/detik per user lebih dari cukup utk UX)
     if !st.khatmil_claim_gate(&cu.user_id) {
         return Err(AppError::RateLimited);
     }
-    let a = svc::claim(&st.pool, cu.user_id, id, juz).await?;
+    let a = svc::claim(&st.pool, cu.user_id, id, juz, group_id).await?;
     Ok(ok(a, StatusCode::CREATED))
 }
 

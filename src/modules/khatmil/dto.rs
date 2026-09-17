@@ -68,6 +68,8 @@ pub struct CampaignDetail {
     #[serde(flatten)]
     pub campaign: CampaignOut,
     pub juz_map: Vec<JuzSlot>,
+    #[serde(default)]
+    pub groups: Vec<GroupLite>,
     pub period_start: Option<String>,
     pub period_end: Option<String>,
 }
@@ -76,6 +78,8 @@ pub struct CampaignDetail {
 pub struct ClaimReq {
     #[serde(default)]
     pub juz: Option<i64>,
+    #[serde(default)]
+    pub group_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,6 +88,7 @@ pub struct AssignmentOut {
     pub campaign_id: i64,
     pub campaign_name: String,
     pub juz: i64,
+    pub group_id: i64,
     pub status: String,
     pub due_at: Option<String>,
     pub pages_read: i64,
@@ -155,4 +160,12 @@ pub struct ActivityEventOut {
     pub note: Option<String>,
     pub completed: bool, // laporan yang posisinya = ayat terakhir juz
     pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupLite {
+    pub id: i64,
+    pub group_no: i64,
+    pub member_count: i64,
+    pub pembina: Option<String>,
 }

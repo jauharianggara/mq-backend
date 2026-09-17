@@ -228,8 +228,8 @@
     "hash": "f11e34aafe091f26cf0705339fa59f88"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/admin/mod.rs": {
-    "mtime": 1789384802302.015,
-    "hash": "ce828d3a66efe0bd4dc67cc0caa69cb6"
+    "mtime": 1789619971554.9036,
+    "hash": "c99207c49f1a6cddbbb69c5273c2e0da"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/auth/dto.rs": {
     "mtime": 1789379879971.3252,
@@ -264,24 +264,24 @@
     "hash": "b414aa02c24eeef567a419cd9ac9203d"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/khatmil/dto.rs": {
-    "mtime": 1789611663678.1516,
-    "hash": "42275d08056eebd78111fe26c3859a06"
+    "mtime": 1789621024751.6038,
+    "hash": "5a8ac2540ff298a1bb10611508310ead"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/khatmil/handler.rs": {
-    "mtime": 1789517494394.1548,
-    "hash": "26482d51c66cca084f24db7cec4170ae"
+    "mtime": 1789621046904.1514,
+    "hash": "c2fcec5b6ab77947d9d7b083bd9bd30e"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/khatmil/mod.rs": {
     "mtime": 1789517083078.5132,
     "hash": "fa396723875297862525b3a6568da5c8"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/khatmil/penugasan.rs": {
-    "mtime": 1789615866726.3618,
+    "mtime": 1789619889865.6194,
     "hash": "efebc8e93aba402d2ae71d0d90dafee7"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/khatmil/service.rs": {
-    "mtime": 1789611726048.368,
-    "hash": "5d89d2fc9a2ad84dd1c598635fd2a514"
+    "mtime": 1789621235046.2788,
+    "hash": "ba946db9ff4ee42710f2f3bfb8a07c13"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/learning/dto.rs": {
     "mtime": 1789381448451.3296,
@@ -376,36 +376,36 @@
     "hash": "3b13ace7511f142c129e31fa2e7e8ff8"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/users/dto.rs": {
-    "mtime": 1789613341021.9138,
-    "hash": "c213b1f29775e3b1f0395f2d273f6165"
+    "mtime": 1789618081610.6335,
+    "hash": "1682c98adf444b191507113672b996ee"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/users/handler.rs": {
-    "mtime": 1789613412697.267,
-    "hash": "d4c09b4fc7776e51542ab4842a690b0b"
+    "mtime": 1789618081611.677,
+    "hash": "d2f2f614a276d9ea0abe6d94166c98c7"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/users/mod.rs": {
-    "mtime": 1789613341022.9045,
-    "hash": "7320263668d8e0b48256b7b1e1c915f1"
+    "mtime": 1789618081611.677,
+    "hash": "64218020eae1e7f88bfc5b9c65d1d3b5"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/users/service.rs": {
-    "mtime": 1789613720616.4219,
-    "hash": "5a0e02d5c4584abcebd377279ac95742"
+    "mtime": 1789618274898.173,
+    "hash": "ce35959645d25a9745447f4863c54e8f"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/ustadz/dto.rs": {
-    "mtime": 1789613385815.3528,
-    "hash": "c5e463829aa3a8ce582768b2da85e6ce"
+    "mtime": 1789618081611.677,
+    "hash": "65c0f3efe86381705210961d9211567c"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/ustadz/handler.rs": {
-    "mtime": 1789613412696.2625,
-    "hash": "f1aa581b7bbdb67826169c28878d022f"
+    "mtime": 1789618081611.677,
+    "hash": "b0d347f54de5d856c1ae0d6055b67d2c"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/ustadz/mod.rs": {
-    "mtime": 1789613385816.3232,
-    "hash": "ae7d5de00df95e0ea9574fd978e9f780"
+    "mtime": 1789618081661.2112,
+    "hash": "aebb6f309cc383097ae6a438f2e98b61"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/ustadz/service.rs": {
-    "mtime": 1789613385815.3528,
-    "hash": "4d9223841d57489da3e99b43e0205029"
+    "mtime": 1789618362081.592,
+    "hash": "08226c58e24ed3e56e98455f1e4b00ff"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/visits/dto.rs": {
     "mtime": 1789616673829.9414,
@@ -424,8 +424,8 @@
     "hash": "1b952aedee4ca7ad5fe495261a57d6d6"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/visits/service.rs": {
-    "mtime": 1789592711473.7476,
-    "hash": "0f87e31e43423ce2fccb67af809c976b"
+    "mtime": 1789618439755.2878,
+    "hash": "3975f82c62a9e0c6de3139e0aa1b90d0"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/src/modules/wallet/admin_service.rs": {
     "mtime": 1789559898862.163,
@@ -496,8 +496,8 @@
     "hash": "4d384325f4258340fac8d7b9d111acf9"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/.graphify/GRAPH_REPORT.md": {
-    "mtime": 1789616526151.238,
-    "hash": "2ec3eb377eef82d1fd9a5210ab84432c"
+    "mtime": 1789621191672.986,
+    "hash": "0638b9db110ae0ba6c53f835a89a8a62"
   },
   "C:/Users/jauha/ZCodeProject/mq-backend/docs/mq-architecture.html": {
     "mtime": 1789559898847.0298,
@@ -526,5 +526,9 @@
   "C:/Users/jauha/ZCodeProject/mq-backend/migrations/0023_master_data.sql": {
     "mtime": 1789613297268.2883,
     "hash": "3e98bcb1694f3092dd22054f5568042d"
+  },
+  "C:/Users/jauha/ZCodeProject/mq-backend/migrations/0024_location_points.sql": {
+    "mtime": 1789616509081.838,
+    "hash": "28cd3ffdf244fdb9f808d1a1305b3d15"
   }
 }
