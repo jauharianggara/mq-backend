@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize)]
 pub struct PatchMeReq {
     pub full_name: Option<String>,
+    pub phone: Option<String>,
     pub gender: Option<String>,
     pub birth_date: Option<String>, // YYYY-MM-DD
     pub address_text: Option<String>,
@@ -48,4 +49,18 @@ pub struct LastRead {
     pub surah_name: String,
     pub ayah_number: i64,
     pub page: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MyProfileOut {
+    pub phone: Option<String>,
+    pub email: Option<String>,
+    pub full_name: Option<String>,
+    pub gender: Option<String>,
+    pub birth_date: Option<String>,
+    pub address_text: Option<String>,
+    pub city: Option<String>,
+    pub province: Option<String>,
+    pub bio: Option<String>,
+    pub photo_media_id: Option<i64>,
 }

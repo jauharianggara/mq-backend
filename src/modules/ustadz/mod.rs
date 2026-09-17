@@ -13,4 +13,6 @@ pub fn routes() -> Router<AppState> {
         .route("/me/ustadz/specializations", get(handler::get_specializations).put(handler::put_specializations))
         .route("/me/ustadz/availability", get(handler::get_availability).put(handler::put_availability))
         .route("/ustadz/me/stats", get(handler::stats))
+        .route("/me/ustadz/detail", get(handler::get_detail).put(handler::put_detail))
+        .route("/me/ustadz/bank-account", get(handler::get_bank).put(handler::put_bank))
 }

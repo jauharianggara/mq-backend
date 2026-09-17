@@ -92,3 +92,48 @@ pub async fn stats(pool: &MySqlPool, user_id: i64) -> Result<UstadzStats, AppErr
         questions_answered: 0, questions_pending: 0,
     })
 }
+
+pub async fn get_detail(pool: &MySqlPool, user_id: i64) -> Result<crate::modules::ustadz::dto::UstadzDetailOut, AppError> {
+    let r: (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT pendidikan_terakhir, pengalaman_mengajar FROM ustadz_profiles WHERE user_id = ?")
+        .bind(user_id).fetch_one(pool).await.map_err(dberr)?;
+    Ok(crate::modules::ustadz::dto::UstadzDetailOut {
+        pendidikan_terakhir: r.0, pengalaman_mengajar: r.1,
+    })
+}
+
+pub async fn put_detail(pool: &MySqlPool, user_id: i64, req: crate::modules::ustadz::dto::UstadzDetailReq) -> Result<(), AppError> {
+    let pend = req.pendidikan_terakhir.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let peng = req.pengalaman_mengajar.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    sqlx::query(
+        "UPDATE ustadz_profiles SET          pendidikan_terakhir = COALESCE(?, pendidikan_terakhir),          pengalaman_mengajar = COALESCE(?, pengalaman_mengajar) WHERE user_id = ?")
+        .bind(pend).bind(peng).bind(user_id)
+        .execute(pool).await.map_err(dberr)?;
+    Ok(())
+}
+
+pub async fn get_bank(pool: &MySqlPool, user_id: i64) -> Result<crate::modules::ustadz::dto::BankAccountOut, AppError> {
+    let r: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT bank_name, bank_account_no, bank_account_name FROM ustadz_bank_accounts WHERE user_id = ?")
+        .bind(user_id).fetch_optional(pool).await.map_err(dberr)?;
+    Ok(match r {
+        Some((b, n, an)) => crate::modules::ustadz::dto::BankAccountOut {
+            bank_name: Some(b), bank_account_no: Some(n), bank_account_name: Some(an) },
+        None => crate::modules::ustadz::dto::BankAccountOut {
+            bank_name: None, bank_account_no: None, bank_account_name: None },
+    })
+}
+
+pub async fn put_bank(pool: &MySqlPool, user_id: i64, req: crate::modules::ustadz::dto::BankAccountReq) -> Result<(), AppError> {
+    let b = req.bank_name.trim();
+    let n = req.bank_account_no.trim();
+    let an = req.bank_account_name.trim();
+    if b.is_empty() || n.is_empty() || an.is_empty() {
+        return Err(AppError::Unprocessable("bank, nomor rekening, dan atas nama wajib diisi".into()));
+    }
+    sqlx::query(
+        "INSERT INTO ustadz_bank_accounts (user_id, bank_name, bank_account_no, bank_account_name) VALUES (?, ?, ?, ?)          ON DUPLICATE KEY UPDATE bank_name = VALUES(bank_name), bank_account_no = VALUES(bank_account_no), bank_account_name = VALUES(bank_account_name)")
+        .bind(user_id).bind(b).bind(n).bind(an)
+        .execute(pool).await.map_err(dberr)?;
+    Ok(())
+}

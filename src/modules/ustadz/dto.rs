@@ -35,3 +35,29 @@ pub struct UstadzStats {
     pub questions_answered: i64,
     pub questions_pending: i64,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct UstadzDetailReq {
+    pub pendidikan_terakhir: Option<String>,
+    pub pengalaman_mengajar: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UstadzDetailOut {
+    pub pendidikan_terakhir: Option<String>,
+    pub pengalaman_mengajar: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BankAccountReq {
+    pub bank_name: String,
+    pub bank_account_no: String,
+    pub bank_account_name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BankAccountOut {
+    pub bank_name: Option<String>,
+    pub bank_account_no: Option<String>,
+    pub bank_account_name: Option<String>,
+}

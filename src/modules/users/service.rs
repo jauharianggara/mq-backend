@@ -19,9 +19,15 @@ pub async fn patch_me(pool: &MySqlPool, user_id: i64, req: PatchMeReq) -> Result
         chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
             .map_err(|_| AppError::Unprocessable("birth_date harus YYYY-MM-DD".into()))?;
     }
+    if let Some(p) = req.phone.as_deref() {
+        let digits: String = p.chars().filter(|c| c.is_ascii_digit()).collect();
+        if !(8..=15).contains(&digits.len()) {
+            return Err(AppError::Unprocessable("nomor HP tidak valid (8-15 digit)".into()));
+        }
+    }
     sqlx::query(
         "INSERT INTO user_profiles (user_id, full_name, gender, birth_date, address_text, city, province, photo_media_id, bio) \
-         VALUES (?, COALESCE(?, 'Belum Diisi'), ?, ?, ?, ?, ?, ?, ?) AS new \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
          ON DUPLICATE KEY UPDATE full_name = COALESCE(new.full_name, user_profiles.full_name), gender = COALESCE(new.gender, user_profiles.gender), \
          birth_date = COALESCE(new.birth_date, user_profiles.birth_date), address_text = COALESCE(new.address_text, user_profiles.address_text), \
          city = COALESCE(new.city, user_profiles.city), province = COALESCE(new.province, user_profiles.province), \
@@ -32,7 +38,31 @@ pub async fn patch_me(pool: &MySqlPool, user_id: i64, req: PatchMeReq) -> Result
         .bind(req.address_text).bind(req.city).bind(req.province)
         .bind(req.photo_media_id).bind(req.bio)
         .execute(pool).await.map_err(dberr)?;
+    if let Some(p) = req.phone.as_deref() {
+        let clean: String = p.trim().to_string();
+        sqlx::query("UPDATE users SET phone = ? WHERE id = ?")
+            .bind(clean).bind(user_id)
+            .execute(pool).await.map_err(dberr)?;
+    }
     Ok(())
+}
+
+/// GET /me/profile — data diri lengkap pemilik akun (self only).
+pub async fn my_profile(pool: &MySqlPool, user_id: i64) -> Result<crate::modules::users::dto::MyProfileOut, AppError> {
+    let (phone, email): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT phone, email FROM users WHERE id = ?")
+        .bind(user_id).fetch_one(pool).await.map_err(dberr)?;
+    let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)> =
+        sqlx::query_as(
+            "SELECT full_name, gender, DATE_FORMAT(birth_date, '%Y-%m-%d'), address_text, city, province, bio, photo_media_id              FROM user_profiles WHERE user_id = ?")
+            .bind(user_id).fetch_optional(pool).await.map_err(dberr)?;
+    let r = row.unwrap_or_default();
+    Ok(crate::modules::users::dto::MyProfileOut {
+        phone, email,
+        full_name: r.0, gender: r.1, birth_date: r.2,
+        address_text: r.3, city: r.4, province: r.5,
+        bio: r.6, photo_media_id: r.7,
+    })
 }
 
 /// DELETE /me — PDP keputusan #15: soft-DELETED + anonymize PII, histori sah dipertahankan.

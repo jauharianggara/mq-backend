@@ -12,6 +12,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         // NOTE: GET /me sudah terdaftar di modul auth (interim) — tetap satu router nest
         .route("/me", axum::routing::patch(handler::patch_me).delete(handler::delete_me))
+        .route("/me/profile", get(handler::my_profile))
         .route("/me/progress/summary", get(handler::progress_summary))
         .route("/me/devices", get(handler::list_devices).post(handler::register_device))
         .route("/me/devices/{id}", delete(handler::delete_device))
