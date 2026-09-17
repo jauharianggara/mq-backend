@@ -27,6 +27,8 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/users", get(users_list))
         .route("/admin/santri", get(santri_list))
         .route("/admin/ustadz", get(ustadz_list))
+        .route("/admin/santri/{id}", get(santri_detail))
+        .route("/admin/ustadz/{id}", get(ustadz_detail))
         .route("/admin/users/{id}", patch(users_patch))
 }
 
@@ -252,4 +254,91 @@ async fn users_patch(cu: CurrentUser, State(st): State<AppState>, Path(id): Path
         .bind(cu.user_id).bind(id.to_string()).bind(body.to_string())
         .execute(&st.pool).await;
     Ok(ok(json!({ "updated": true }), StatusCode::OK))
+}
+
+// ===================== detail agregat: SANTRI & USTADZ =====================
+
+async fn santri_detail(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
+    cu.require("users.read")?;
+    let row: Option<(String, Option<String>, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT COALESCE(NULLIF(up.full_name,''),'(tanpa nama)'), u.email, u.phone, up.city, u.status, \
+         up.gender, DATE_FORMAT(u.created_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(u.last_login_at, '%Y-%m-%dT%H:%i:%sZ'), up.bio \
+         FROM users u LEFT JOIN user_profiles up ON up.user_id = u.id \
+         WHERE u.id = ? AND EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.code = 'SANTRI')")
+        .bind(id).fetch_optional(&st.pool).await.map_err(dberr)?;
+    let Some(r) = row else { return Err(AppError::NotFound("santri tidak ditemukan".into())); };
+    // deposit + mutasi terakhir
+    let balance: i64 = sqlx::query_scalar("SELECT COALESCE(balance,0) FROM wallets WHERE user_id = ?").bind(id)
+        .fetch_one(&st.pool).await.map_err(dberr)?;
+    let txs: Vec<(i64, String, i64, i64, Option<String>, Option<i64>, String)> = sqlx::query_as(
+        "SELECT id, tx_type, amount, balance_after, subject_type, subject_id, \
+         DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') \
+         FROM wallet_transactions WHERE user_id = ? ORDER BY id DESC LIMIT 10").bind(id)
+        .fetch_all(&st.pool).await.map_err(dberr)?;
+    let tx_json: Vec<_> = txs.iter().map(|t| json!({
+        "id": t.0, "tx_type": t.1, "amount": t.2, "balance_after": t.3,
+        "subject_type": t.4, "subject_id": t.5, "created_at": t.6,
+    })).collect();
+    // khatmil aktif + juz yang dipegang
+    let kh: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT DISTINCT kc.id, kc.name, \
+         (SELECT GROUP_CONCAT(a.juz ORDER BY a.juz) FROM khatmil_juz_assignments a WHERE a.participant_id = kp.id) \
+         FROM khatmil_participants kp \
+         JOIN khatmil_campaigns kc ON kc.id = kp.campaign_id AND kc.status = 'ACTIVE' \
+         WHERE kp.user_id = ? ORDER BY kc.id DESC LIMIT 10").bind(id)
+        .fetch_all(&st.pool).await.map_err(dberr)?;
+    let kh_json: Vec<_> = kh.iter().map(|k| json!({
+        "campaign_id": k.0, "name": k.1, "juz": k.2.split(',').map(|x| x.trim().to_string()).collect::<Vec<_>>(),
+    })).collect();
+    Ok(ok(json!({
+        "id": id, "full_name": r.0, "email": r.1, "phone": r.2, "city": r.3,
+        "status": r.4, "gender": r.5, "created_at": r.6, "last_login_at": r.7, "bio": r.8,
+        "deposit": balance, "transactions": tx_json, "khatmil_aktif": kh_json,
+    }), StatusCode::OK))
+}
+
+#[allow(clippy::type_complexity)]
+async fn ustadz_detail(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
+    cu.require("users.read")?;
+    let row: Option<(String, Option<String>, Option<String>, Option<String>, String, Option<String>, Option<String>, Option<String>, Option<String>, i8, Option<i64>, Option<f64>, i64)> = sqlx::query_as(
+        "SELECT COALESCE(NULLIF(up.full_name,''),'(tanpa nama)'), u.email, u.phone, up.city, u.status, \
+         up2.bio, up2.pendidikan_terakhir, DATE_FORMAT(u.last_login_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(up2.verified_at, '%Y-%m-%dT%H:%i:%sZ'), \
+         COALESCE(vs.is_accepting, 0), vs.price_per_hour, \
+         CAST((SELECT AVG(vr.rating) FROM visit_reviews vr WHERE vr.reviewee_id = u.id AND vr.direction = 'SANTRI_TO_USTADZ' AND vr.revealed_at IS NOT NULL AND vr.hidden = 0) AS DOUBLE), \
+         (SELECT COUNT(*) FROM visit_reviews vr WHERE vr.reviewee_id = u.id AND vr.direction = 'SANTRI_TO_USTADZ' AND vr.revealed_at IS NOT NULL AND vr.hidden = 0) \
+         FROM users u \
+         LEFT JOIN user_profiles up ON up.user_id = u.id \
+         LEFT JOIN ustadz_profiles up2 ON up2.user_id = u.id \
+         LEFT JOIN ustadz_visit_settings vs ON vs.ustadz_id = u.id \
+         WHERE u.id = ? AND EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.code = 'USTADZ')")
+        .bind(id).fetch_optional(&st.pool).await.map_err(dberr)?;
+    let Some(r) = row else { return Err(AppError::NotFound("ustadz tidak ditemukan".into())); };
+    // ketersediaan mingguan + libur
+    let slots: Vec<(i64, i8, i64, i64)> = sqlx::query_as(
+        "SELECT id, weekday, start_minute, end_minute FROM ustadz_availability_slots WHERE ustadz_id = ? ORDER BY weekday, start_minute")
+        .bind(id).fetch_all(&st.pool).await.map_err(dberr)?;
+    let slots_json: Vec<_> = slots.iter().map(|s| json!({ "id": s.0, "weekday": s.1, "start_minute": s.2, "end_minute": s.3 })).collect();
+    let bo: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT DATE_FORMAT(off_date, '%Y-%m-%d'), note FROM ustadz_blackout_dates WHERE ustadz_id = ? ORDER BY off_date LIMIT 60")
+        .bind(id).fetch_all(&st.pool).await.map_err(dberr)?;
+    let bo_json: Vec<_> = bo.iter().map(|b| json!({ "off_date": b.0, "note": b.1 })).collect();
+    // saldo penghasilan + penarikan terakhir
+    let balance: i64 = sqlx::query_scalar("SELECT COALESCE(balance,0) FROM wallets WHERE user_id = ?").bind(id)
+        .fetch_one(&st.pool).await.map_err(dberr)?;
+    let pays: Vec<(i64, i64, i64, String, String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, amount, fee, bank_name, bank_account_no, bank_account_name, status, \
+         DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') \
+         FROM payout_requests WHERE ustadz_id = ? ORDER BY id DESC LIMIT 10").bind(id)
+        .fetch_all(&st.pool).await.map_err(dberr)?;
+    let pays_json: Vec<_> = pays.iter().map(|p| json!({
+        "id": p.0, "amount": p.1, "fee": p.2, "bank_name": p.3, "account_no": p.4,
+        "account_name": p.5, "status": p.6, "created_at": p.7,
+    })).collect();
+    Ok(ok(json!({
+        "id": id, "full_name": r.0, "email": r.1, "phone": r.2, "city": r.3,
+        "status": r.4, "bio": r.5, "pendidikan": r.6, "last_login_at": r.7,
+        "verified_at": r.8, "is_accepting": r.9 != 0, "price_per_hour": r.10,
+        "rating_avg": r.11, "rating_count": r.12,
+        "saldo_penghasilan": balance, "slots": slots_json, "blackouts": bo_json, "payouts": pays_json,
+    }), StatusCode::OK))
 }
