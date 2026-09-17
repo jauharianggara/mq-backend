@@ -2,7 +2,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, put};
+use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
 use serde_json::json;
 
@@ -28,6 +28,10 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/santri", get(santri_list))
         .route("/admin/ustadz", get(ustadz_list))
         .route("/admin/users-count", get(users_count))
+        .route("/admin/count", get(admin_count))
+        .route("/admin/reviews", get(admin_reviews))
+        .route("/admin/reviews/{id}/hide", post(admin_review_hide))
+        .route("/admin/reviews/{id}/unhide", post(admin_review_unhide))
         .route("/admin/santri/{id}", get(santri_detail))
         .route("/admin/ustadz/{id}", get(ustadz_detail))
         .route("/admin/users/{id}", patch(users_patch))
@@ -361,4 +365,85 @@ async fn ustadz_detail(cu: CurrentUser, State(st): State<AppState>, Path(id): Pa
         "rating_avg": r.11, "rating_count": r.12,
         "saldo_penghasilan": balance, "slots": slots_json, "blackouts": bo_json, "payouts": pays_json,
     }), StatusCode::OK))
+}
+
+// ===================== reviews admin (moderasi) =====================
+
+#[derive(serde::Deserialize)]
+struct ReviewsQ {
+    direction: Option<String>, // SANTRI_TO_USTADZ | USTADZ_TO_SANTRI
+    cursor: Option<i64>,
+}
+
+async fn admin_reviews(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<ReviewsQ>) -> Result<Response, AppError> {
+    cu.require("visits.admin")?;
+    let limit: i64 = 50;
+    let rows: Vec<(i64, i64, String, i64, String, i8, Option<String>, i8, Option<String>, String)> = sqlx::query_as(
+        "SELECT vr.id, vr.visit_id, vr.direction, vr.reviewer_id, \
+         COALESCE(NULLIF(rvp.full_name,''),'(tanpa nama)'), vr.rating, vr.comment, vr.hidden, \
+         DATE_FORMAT(vr.revealed_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(vr.created_at, '%Y-%m-%dT%H:%i:%sZ') \
+         FROM visit_reviews vr \
+         LEFT JOIN user_profiles rvp ON rvp.user_id = vr.reviewer_id \
+         WHERE (? IS NULL OR vr.direction = ?) AND (? IS NULL OR vr.id < ?) \
+         ORDER BY vr.id DESC LIMIT ?")
+        .bind(q.direction.as_deref()).bind(q.direction.as_deref())
+        .bind(q.cursor).bind(q.cursor).bind(limit + 1)
+        .fetch_all(&st.pool).await.map_err(dberr)?;
+    let has_more = rows.len() as i64 > limit;
+    let items: Vec<_> = rows.iter().take(limit as usize).map(|r| json!({
+        "id": r.0, "visit_id": r.1, "direction": r.2, "reviewer_id": r.3,
+        "reviewer_name": r.4, "rating": r.5, "comment": r.6, "hidden": r.7 != 0,
+        "revealed": r.8.is_some(), "created_at": r.9,
+    })).collect();
+    let next = if has_more { rows.get(limit as usize).map(|r| r.0.to_string()) } else { None };
+    Ok(ok(json!({ "items": items, "meta": { "pagination": { "next_cursor": next, "has_more": has_more } } }), StatusCode::OK))
+}
+
+async fn admin_review_hide(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
+    cu.require("visits.admin")?;
+    sqlx::query("UPDATE visit_reviews SET hidden = 1 WHERE id = ?").bind(id)
+        .execute(&st.pool).await.map_err(dberr)?;
+    Ok(ok(json!({ "hidden": true }), StatusCode::OK))
+}
+
+async fn admin_review_unhide(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
+    cu.require("visits.admin")?;
+    sqlx::query("UPDATE visit_reviews SET hidden = 0 WHERE id = ?").bind(id)
+        .execute(&st.pool).await.map_err(dberr)?;
+    Ok(ok(json!({ "hidden": false }), StatusCode::OK))
+}
+
+// ===================== counter generik utk header halaman =====================
+
+async fn admin_count(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, AppError> {
+    cu.require("users.read")?;
+    let status = q.get("status").cloned();
+    let entity = q.get("entity").cloned().unwrap_or_default();
+    let total: i64 = match entity.as_str() {
+        "visits" => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM ustadz_visits WHERE (? IS NULL OR status = ?)")
+            .bind(status.as_deref()).bind(status.as_deref())
+            .fetch_one(&st.pool).await.map_err(dberr)?,
+        "payments" => {
+            let stype = q.get("subject_type").cloned();
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM payments WHERE (? IS NULL OR status = ?) AND (? IS NULL OR subject_type = ?)")
+                .bind(status.as_deref()).bind(status.as_deref())
+                .bind(stype.as_deref()).bind(stype.as_deref())
+                .fetch_one(&st.pool).await.map_err(dberr)?
+        }
+        "payouts" => sqlx::query_scalar(
+            "SELECT COUNT(*) FROM payout_requests WHERE (? IS NULL OR status = ?)")
+            .bind(status.as_deref()).bind(status.as_deref())
+            .fetch_one(&st.pool).await.map_err(dberr)?,
+        "reviews" => {
+            let dir = q.get("direction").cloned();
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM visit_reviews WHERE (? IS NULL OR direction = ?)")
+                .bind(dir.as_deref()).bind(dir.as_deref())
+                .fetch_one(&st.pool).await.map_err(dberr)?
+        }
+        _ => return Err(AppError::Unprocessable("entity tidak dikenal (visits|payments|payouts|reviews)".into())),
+    };
+    Ok(ok(json!({ "total": total }), StatusCode::OK))
 }
