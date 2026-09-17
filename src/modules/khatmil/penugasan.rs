@@ -67,8 +67,9 @@ pub async fn overview(pool: &MySqlPool, ustadz_id: i64) -> Result<serde_json::Va
         "campaign_name": g.3, "target_khataman": g.4, "requested_at": g.5,
     })).collect();
 
-    let dibina: Vec<(i64, i64, i64, String, i64)> = sqlx::query_as(
-        "SELECT g.id, g.campaign_id, g.group_no, c.name, c.target_khataman \
+    let dibina: Vec<(i64, i64, i64, String, i64, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT g.id, g.campaign_id, g.group_no, c.name, c.target_khataman, \
+         DATE_FORMAT(c.period_start, '%Y-%m-%d'), DATE_FORMAT(c.period_end, '%Y-%m-%d') \
          FROM khatmil_groups g JOIN khatmil_campaigns c ON c.id = g.campaign_id \
          WHERE g.ustadz_id = ? AND c.status IN ('ACTIVE','COMPLETED') ORDER BY c.id DESC LIMIT 50")
         .bind(ustadz_id).fetch_all(pool).await.map_err(dberr)?;
@@ -82,6 +83,7 @@ pub async fn overview(pool: &MySqlPool, ustadz_id: i64) -> Result<serde_json::Va
         dibina_out.push(serde_json::json!({
             "group_id": g.0, "campaign_id": g.1, "group_no": g.2,
             "campaign_name": g.3, "target_khataman": g.4,
+            "period_start": g.5, "period_end": g.6,
             "filled": filled, "completed": completed,
             "khatam": filled == 30 && completed >= 30,
         }));
