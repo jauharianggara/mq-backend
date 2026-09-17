@@ -123,19 +123,25 @@ async fn users_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Query
     let qq = q.get("q").map(|s| format!("%{s}%"));
     let cursor: Option<i64> = q.get("cursor").and_then(|v| v.parse().ok());
     let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(20).clamp(1, 100);
-    let rows: Vec<(i64, Option<String>, Option<String>, String, String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT u.id, u.email, u.phone, u.account_type, u.status, \
-         (SELECT GROUP_CONCAT(r.code) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id), \
-         DATE_FORMAT(u.last_login_at, '%Y-%m-%dT%H:%i:%sZ') \
-         FROM users u WHERE (? IS NULL OR u.id < ?) AND (? IS NULL OR u.status = ?) \
-         AND (? IS NULL OR u.email LIKE ? OR u.phone LIKE ?) ORDER BY u.id DESC LIMIT ?")
+    let rows: Vec<(
+        i64, Option<String>, Option<String>, String, String, Option<String>, Option<String>,
+        Option<String>, Option<String>, Option<String>, Option<String>, Option<f64>, Option<f64>,
+    )> = sqlx::query_as(
+        "SELECT u.id, u.email, u.phone, u.account_type, u.status,          (SELECT GROUP_CONCAT(r.code) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id),          DATE_FORMAT(u.last_login_at, '%Y-%m-%dT%H:%i:%sZ'),          (SELECT upn.full_name FROM user_profiles upn WHERE upn.user_id = u.id),          (SELECT upn.city FROM user_profiles upn WHERE upn.user_id = u.id),          (SELECT upu.pendidikan_terakhir FROM ustadz_profiles upu WHERE upu.user_id = u.id),          (SELECT upu.point_label FROM ustadz_profiles upu WHERE upu.user_id = u.id),          (SELECT CAST(upu.point_lat AS DOUBLE) FROM ustadz_profiles upu WHERE upu.user_id = u.id), (SELECT CAST(upu.point_lng AS DOUBLE) FROM ustadz_profiles upu WHERE upu.user_id = u.id)          FROM users u WHERE (? IS NULL OR u.id < ?) AND (? IS NULL OR u.status = ?)          AND (? IS NULL OR u.email LIKE ? OR u.phone LIKE ?               OR EXISTS (SELECT 1 FROM user_profiles upn2 WHERE upn2.user_id = u.id AND upn2.full_name LIKE ?))          ORDER BY u.id DESC LIMIT ?")
         .bind(cursor).bind(cursor).bind(status.as_deref()).bind(status.as_deref())
-        .bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(limit + 1)
+        .bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(limit + 1)
         .fetch_all(&st.pool).await.map_err(dberr)?;
     let has_more = rows.len() as i64 > limit;
     let items: Vec<_> = rows.iter().take(limit as usize).map(|r| json!({
         "id": r.0, "email": r.1, "phone": r.2, "account_type": r.3, "status": r.4,
         "roles": r.5.as_deref().map(|s| s.split(',').collect::<Vec<_>>()), "last_login_at": r.6,
+        "full_name": r.7, "city": r.8,
+        "pendidikan_terakhir": r.9,
+        "point": r.11.map(|lat| json!({
+            "lat": lat,
+            "lng": r.12,
+            "label": r.10,
+        })),
     })).collect();
     Ok(ok(items, StatusCode::OK))
 }
