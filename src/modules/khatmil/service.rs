@@ -56,11 +56,12 @@ fn pct(part: i64, total: i64) -> Option<f64> {
 // =====================================================================
 
 pub async fn list_campaigns(pool: &MySqlPool, status: Option<String>) -> Result<Vec<CampaignOut>, AppError> {
-    let rows: Vec<(i64, String, String, Option<String>, Option<i64>, String, String, i64, i64, i8, i64, i64, f64)> = sqlx::query_as(
+    let rows: Vec<(i64, String, String, Option<String>, Option<i64>, String, String, i64, i64, i8, i64, i64, f64, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT c.id, c.slug, c.name, c.description, c.max_participants, c.mode, c.status, c.target_khataman, c.min_minutes_per_juz, c.require_manual_verification, \
          (SELECT COUNT(*) FROM khatmil_participants p WHERE p.campaign_id = c.id), \
          (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.campaign_id = c.id AND a.status = 'COMPLETED'), \
-         CAST(IFNULL(ROUND(100.0 * (SELECT COUNT(*) FROM khatmil_juz_assignments a2 WHERE a2.campaign_id = c.id AND a2.status = 'COMPLETED') / 30, 1), 0) AS DOUBLE) \
+         CAST(IFNULL(ROUND(100.0 * (SELECT COUNT(*) FROM khatmil_juz_assignments a2 WHERE a2.campaign_id = c.id AND a2.status = 'COMPLETED') / 30, 1), 0) AS DOUBLE), \
+         DATE_FORMAT(c.period_start, '%Y-%m-%d'), DATE_FORMAT(c.period_end, '%Y-%m-%d') \
          FROM khatmil_campaigns c WHERE (? IS NULL OR c.status = ?) ORDER BY c.id DESC")
         .bind(status.as_deref()).bind(status.as_deref())
         .fetch_all(pool).await.map_err(dberr)?;
@@ -68,6 +69,7 @@ pub async fn list_campaigns(pool: &MySqlPool, status: Option<String>) -> Result<
         id: r.0, slug: r.1, name: r.2, description: r.3, max_participants: r.4, mode: r.5, status: r.6,
         target_khataman: r.7, min_minutes_per_juz: r.8, require_manual_verification: r.9 != 0,
         participants: r.10, juz_completed: r.11, progress_pct: r.12,
+        period_start: r.13, period_end: r.14,
     }).collect())
 }
 
@@ -184,6 +186,7 @@ pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail
             id: cid, slug, name, description: descr, max_participants: maxp, mode, status, target_khataman: target,
             min_minutes_per_juz: minmin, require_manual_verification: rmv != 0,
             participants, juz_completed: completed, progress_pct: pctv,
+            period_start: ps.clone(), period_end: pe.clone(),
         },
         juz_map, period_start: ps, period_end: pe,
     })

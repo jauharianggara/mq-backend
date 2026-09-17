@@ -44,6 +44,10 @@ pub struct CampaignOut {
     pub participants: i64,
     pub juz_completed: i64,
     pub progress_pct: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period_start: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period_end: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
