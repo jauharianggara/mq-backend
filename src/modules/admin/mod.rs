@@ -27,6 +27,7 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/users", get(users_list))
         .route("/admin/santri", get(santri_list))
         .route("/admin/ustadz", get(ustadz_list))
+        .route("/admin/users-count", get(users_count))
         .route("/admin/santri/{id}", get(santri_detail))
         .route("/admin/ustadz/{id}", get(ustadz_detail))
         .route("/admin/users/{id}", patch(users_patch))
@@ -257,6 +258,25 @@ async fn users_patch(cu: CurrentUser, State(st): State<AppState>, Path(id): Path
 }
 
 // ===================== detail agregat: SANTRI & USTADZ =====================
+
+/// Total user per role (dengan filter q/status sama seperti list) — utk counter header halaman.
+async fn users_count(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, AppError> {
+    cu.require("users.read")?;
+    let role = q.get("role").filter(|r| matches!(r.as_str(), "SANTRI" | "USTADZ" | "ADMIN" | "MODERATOR")).cloned();
+    let status = q.get("status").cloned();
+    let qq = q.get("q").map(|s| format!("%{s}%"));
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM users u \
+         WHERE (? IS NULL OR EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.code = ?)) \
+           AND (? IS NULL OR u.status = ?) \
+           AND (? IS NULL OR u.email LIKE ? OR u.phone LIKE ? \
+                OR EXISTS (SELECT 1 FROM user_profiles upn2 WHERE upn2.user_id = u.id AND upn2.full_name LIKE ?))")
+        .bind(role.as_deref()).bind(role.as_deref())
+        .bind(status.as_deref()).bind(status.as_deref())
+        .bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref())
+        .fetch_one(&st.pool).await.map_err(dberr)?;
+    Ok(ok(json!({ "total": total }), StatusCode::OK))
+}
 
 async fn santri_detail(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
     cu.require("users.read")?;
