@@ -288,6 +288,9 @@ pub struct AdminVisitFilter {
     pub ustadz_id: Option<i64>,
     pub user_id: Option<i64>,
     pub cursor: Option<i64>,
+    pub sort: Option<String>,
+    pub order: Option<String>,
+    pub page: Option<i64>,
 }
 
 #[derive(Deserialize)]

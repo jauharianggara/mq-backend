@@ -23,6 +23,15 @@ fn paged<T: serde::Serialize>(items: Vec<T>, next: Option<String>) -> Response {
     }))).into_response()
 }
 
+/// Sama seperti `paged` tapi `has_more` eksplisit — utk mode sort/offset di mana
+/// next_cursor kosong namun masih ada halaman berikutnya.
+fn paged_h<T: serde::Serialize>(items: Vec<T>, next: Option<String>, has_more: bool) -> Response {
+    (StatusCode::OK, Json(json!({
+        "data": items,
+        "meta": { "pagination": { "next_cursor": next, "has_more": has_more } }
+    }))).into_response()
+}
+
 // ===================== santri =====================
 
 #[derive(Deserialize)]
@@ -355,8 +364,8 @@ fn admin_perm(cu: &CurrentUser) -> Result<(), AppError> {
 pub async fn admin_list_visits(cu: CurrentUser, State(st): State<AppState>, Query(f): Query<AdminVisitFilter>) -> Result<Response, AppError> {
     admin_perm(&cu)?;
     let limit = 20;
-    let (items, next) = svc::admin_list_visits(&st.pool, &f, limit).await?;
-    Ok(paged(items, next))
+    let (items, next, has_more) = svc::admin_list_visits(&st.pool, &f, limit).await?;
+    Ok(paged_h(items, next, has_more))
 }
 
 pub async fn admin_visit_detail(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
@@ -386,12 +395,19 @@ pub async fn admin_messages(cu: CurrentUser, State(st): State<AppState>, Path(id
 }
 
 #[derive(Deserialize)]
-pub struct PayoutQ { pub status: Option<String>, pub cursor: Option<i64> }
+pub struct PayoutQ {
+    pub status: Option<String>,
+    pub cursor: Option<i64>,
+    pub sort: Option<String>,
+    pub order: Option<String>,
+    pub page: Option<i64>,
+}
 
 pub async fn admin_list_payouts(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<PayoutQ>) -> Result<Response, AppError> {
     admin_perm(&cu)?;
-    let (items, next) = pay::admin_list_payouts(&st.pool, q.status.as_deref(), 20, q.cursor).await?;
-    Ok(paged(items, next))
+    let (items, next, has_more) =
+        pay::admin_list_payouts(&st.pool, q.status.as_deref(), 20, q.cursor, q.sort.as_deref(), q.order.as_deref(), q.page).await?;
+    Ok(paged_h(items, next, has_more))
 }
 
 pub async fn admin_approve_payout(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {

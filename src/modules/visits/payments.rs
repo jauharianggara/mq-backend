@@ -362,26 +362,54 @@ pub async fn ustadz_payouts(pool: &MySqlPool, ustadz_id: i64) -> Result<Vec<crat
     }).collect())
 }
 
-pub async fn admin_list_payouts(pool: &MySqlPool, status: Option<&str>, limit: i64, cursor: Option<i64>) -> Result<(Vec<serde_json::Value>, Option<String>), AppError> {
-    let rows: Vec<(i64, i64, i64, i64, String, String, String, String, String, String)> = sqlx::query_as(
+/// Kolom sort whitelist `/admin/payouts`.
+const PAYOUTS_SORT: &[(&str, &str)] = &[
+    ("id", "pr.id"),
+    ("amount", "pr.amount"),
+    ("created_at", "pr.created_at"),
+    ("status", "pr.status"),
+];
+
+pub async fn admin_list_payouts(
+    pool: &MySqlPool,
+    status: Option<&str>,
+    limit: i64,
+    cursor: Option<i64>,
+    sort: Option<&str>,
+    order: Option<&str>,
+    page: Option<i64>,
+) -> Result<(Vec<serde_json::Value>, Option<String>, bool), AppError> {
+    let page = page.filter(|p| *p >= 1);
+    let srt = crate::shared::sorting::parse(sort, order, PAYOUTS_SORT, "pr.id");
+    let cursor: Option<i64> = if srt.custom { None } else { cursor };
+    let mut sql = format!(
         "SELECT pr.id, pr.ustadz_id, pr.amount, pr.fee, pr.bank_name, pr.bank_account_no, pr.bank_account_name, pr.status, \
          COALESCE(NULLIF(up.full_name, ''), '(tanpa nama)'), \
          DATE_FORMAT(pr.created_at, '%Y-%m-%dT%H:%i:%sZ') \
          FROM payout_requests pr \
          LEFT JOIN user_profiles up ON up.user_id = pr.ustadz_id \
-         WHERE (? IS NULL OR pr.status = ?) AND (? IS NULL OR pr.id < ?) ORDER BY pr.id DESC LIMIT ?")
-        .bind(status).bind(status).bind(cursor).bind(cursor).bind(limit + 1)
-        .fetch_all(pool).await.map_err(dberr)?;
+         WHERE (? IS NULL OR pr.status = ?) AND (? IS NULL OR pr.id < ?) {} LIMIT ?",
+        srt.order_by("pr.id")
+    );
+    if srt.custom {
+        sql.push_str(" OFFSET ?");
+    }
+    let mut qy = sqlx::query_as::<_, (i64, i64, i64, i64, String, String, String, String, String, String)>(&sql)
+        .bind(status).bind(status).bind(cursor).bind(cursor).bind(limit + 1);
+    if srt.custom {
+        qy = qy.bind((page.unwrap_or(1) - 1) * limit);
+    }
+    let rows = qy.fetch_all(pool).await.map_err(dberr)?;
+    let has_more = rows.len() as i64 > limit;
+    let next = if !srt.custom { rows.get(limit as usize).map(|r| r.0.to_string()) } else { None };
     let mut out = Vec::new();
-    let mut next = None;
-    for (i, r) in rows.into_iter().enumerate() {
-        if (i as i64) == limit { next = Some(r.0.to_string()); break; }
+    for r in rows.into_iter().take(limit as usize) {
         out.push(serde_json::json!({
             "id": r.0, "ustadz_id": r.1, "amount": r.2, "fee": r.3, "bank_name": r.4,
             "account_no": r.5, "account_name": r.6, "status": r.7, "ustadz_name": r.8, "created_at": r.9,
         }));
     }
-    Ok((out, next))
+    Ok((out, next, has_more))
 }
 
 pub async fn admin_approve(pool: &MySqlPool, admin_id: i64, payout_id: i64) -> Result<(), AppError> {

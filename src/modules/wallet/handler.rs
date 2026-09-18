@@ -112,29 +112,54 @@ pub struct PaymentsQ {
     /// ustadz_visit | wallet_topup
     pub subject_type: Option<String>,
     pub cursor: Option<i64>,
+    pub sort: Option<String>,
+    pub order: Option<String>,
+    pub page: Option<i64>,
 }
+
+const PAYMENTS_SORT: &[(&str, &str)] = &[
+    ("id", "p.id"),
+    ("amount", "p.amount"),
+    ("created_at", "p.created_at"),
+    ("paid_at", "COALESCE(p.paid_at,'1000-01-01 00:00:00')"),
+    ("status", "p.status"),
+];
 
 /// SEMUA invoice Xendit (kunjungan & top-up deposit) — visibilitas admin.
 /// Refund v2 selalu otomatis ke deposit — TIDAK ADA mark-refunded.
 pub async fn admin_list_payments(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<PaymentsQ>) -> Result<Response, AppError> {
     admin_perm(&cu)?;
-    let rows: Vec<(i64, String, String, Option<String>, i64, String, Option<String>, String, Option<String>, Option<i64>)> = sqlx::query_as(
+    let limit: i64 = 50;
+    let page: Option<i64> = q.page.filter(|p| *p >= 1);
+    let srt = crate::shared::sorting::parse(q.sort.as_deref(), q.order.as_deref(), PAYMENTS_SORT, "p.id");
+    let cursor: Option<i64> = if srt.custom { None } else { q.cursor };
+    let mut sql = format!(
         "SELECT p.id, p.external_id, p.provider, p.channel, p.amount, p.status, p.subject_type, \
          DATE_FORMAT(p.created_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(p.paid_at, '%Y-%m-%dT%H:%i:%sZ'), p.subject_id \
          FROM payments p \
          WHERE (? IS NULL OR p.status = ?) AND (? IS NULL OR p.subject_type = ?) AND (? IS NULL OR p.id < ?) \
-         ORDER BY p.id DESC LIMIT 51")
+         {} LIMIT ?",
+        srt.order_by("p.id")
+    );
+    if srt.custom {
+        sql.push_str(" OFFSET ?");
+    }
+    let mut qy = sqlx::query_as::<_, (i64, String, String, Option<String>, i64, String, Option<String>, String, Option<String>, Option<i64>)>(&sql)
         .bind(&q.status).bind(&q.status)
         .bind(&q.subject_type).bind(&q.subject_type)
-        .bind(q.cursor).bind(q.cursor)
-        .fetch_all(&st.pool).await.map_err(|e| {
-            tracing::error!("admin payments db: {e}");
-            AppError::Internal("db".into())
-        })?;
+        .bind(cursor).bind(cursor)
+        .bind(limit + 1);
+    if srt.custom {
+        qy = qy.bind((page.unwrap_or(1) - 1) * limit);
+    }
+    let rows = qy.fetch_all(&st.pool).await.map_err(|e| {
+        tracing::error!("admin payments db: {e}");
+        AppError::Internal("db".into())
+    })?;
+    let has_more = rows.len() as i64 > limit;
+    let next = if !srt.custom { rows.get(limit as usize).map(|r| r.0.to_string()) } else { None };
     let mut items = Vec::new();
-    let mut next = None;
-    for (i, r) in rows.into_iter().enumerate() {
-        if i == 50 { next = Some(r.0.to_string()); break; }
+    for r in rows.into_iter().take(limit as usize) {
         // label subject: nama pihak terkait (subject_type/subject_id nullable)
         let stype = r.6.clone().unwrap_or_default();
         let sid = r.9.unwrap_or(0);
@@ -170,7 +195,7 @@ pub async fn admin_list_payments(cu: CurrentUser, State(st): State<AppState>, Qu
             "subject_label": label, "created_at": r.7, "paid_at": r.8,
         }));
     }
-    Ok(ok(json!({ "items": items, "meta": { "pagination": { "next_cursor": next, "has_more": next.is_some() } } }), StatusCode::OK))
+    Ok(paged2_h(items, next, has_more))
 }
 
 fn admin_perm(cu: &CurrentUser) -> Result<(), AppError> {
@@ -179,6 +204,11 @@ fn admin_perm(cu: &CurrentUser) -> Result<(), AppError> {
 
 fn paged2<T: serde::Serialize>(items: Vec<T>, next: Option<String>) -> Response {
     (StatusCode::OK, Json(json!({ "data": items, "meta": { "pagination": { "next_cursor": next, "has_more": next.is_some() } } }))).into_response()
+}
+
+/// Sama seperti `paged2` tapi `has_more` eksplisit (mode sort/offset: next kosong namun masih ada halaman).
+fn paged2_h<T: serde::Serialize>(items: Vec<T>, next: Option<String>, has_more: bool) -> Response {
+    (StatusCode::OK, Json(json!({ "data": items, "meta": { "pagination": { "next_cursor": next, "has_more": has_more } } }))).into_response()
 }
 
 #[derive(Deserialize)]

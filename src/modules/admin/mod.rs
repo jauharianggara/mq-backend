@@ -18,6 +18,15 @@ fn ok<T: serde::Serialize>(data: T, status: StatusCode) -> Response {
     (status, Json(json!({ "data": data, "meta": {} }))).into_response()
 }
 
+/// Envelope list seragam seluruh admin: `{data: [items], meta: {pagination: {next_cursor, has_more}}}`
+/// (shape-A — sama dgn helper `paged` modul visits; apiGetPage FE membaca data sbg array).
+fn ok_paged<T: serde::Serialize>(items: &[T], next: Option<String>, has_more: bool, status: StatusCode) -> Response {
+    (status, Json(json!({
+        "data": items,
+        "meta": { "pagination": { "next_cursor": next, "has_more": has_more } }
+    }))).into_response()
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/admin/dashboard", get(dashboard))
@@ -118,31 +127,52 @@ async fn audit_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Query
         .bind(cursor).bind(cursor).bind(module.as_deref()).bind(module.as_deref()).bind(actor).bind(actor).bind(limit + 1)
         .fetch_all(&st.pool).await.map_err(dberr)?;
     let has_more = rows.len() as i64 > limit;
+    let next = if has_more { rows.get(limit as usize).map(|r| r.0.to_string()) } else { None };
     let items: Vec<_> = rows.iter().take(limit as usize).map(|r| json!({
         "id": r.0, "actor_id": r.1, "action": r.2, "module": r.3, "entity_type": r.4,
         "entity_id": r.5, "old": r.6.as_deref().and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok()),
         "new": r.7.as_deref().and_then(|v| serde_json::from_str::<serde_json::Value>(v).ok()), "created_at": r.8,
     })).collect();
-    Ok(ok(items, StatusCode::OK))
+    Ok(ok_paged(&items, next, has_more, StatusCode::OK))
 }
+
+/// Kolom sort whitelist `/admin/users` (param FE -> ekspresi SQL).
+const USERS_SORT: &[(&str, &str)] = &[
+    ("id", "u.id"),
+    ("full_name", "COALESCE(NULLIF(upn3.full_name,''),'')"),
+    ("status", "u.status"),
+    ("last_login_at", "u.last_login_at"),
+];
 
 async fn users_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, AppError> {
     cu.require("users.read")?;
     let status = q.get("status").cloned();
     let qq = q.get("q").map(|s| format!("%{s}%"));
     let role = q.get("role").filter(|r| matches!(r.as_str(), "SANTRI" | "USTADZ" | "ADMIN" | "MODERATOR")).cloned();
-    let cursor: Option<i64> = q.get("cursor").and_then(|v| v.parse().ok());
     let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(20).clamp(1, 100);
-    let rows: Vec<(
+    let page: Option<i64> = q.get("page").and_then(|v| v.parse().ok()).filter(|p| *p >= 1);
+    let srt = crate::shared::sorting::parse(q.get("sort").map(String::as_str), q.get("order").map(String::as_str), USERS_SORT, "u.id");
+    let cursor: Option<i64> = if srt.custom { None } else { q.get("cursor").and_then(|v| v.parse().ok()) };
+    let mut sql = format!(
+        "SELECT u.id, u.email, u.phone, u.account_type, u.status,          (SELECT GROUP_CONCAT(r.code) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id),          DATE_FORMAT(u.last_login_at, '%Y-%m-%dT%H:%i:%sZ'),          (SELECT upn.full_name FROM user_profiles upn WHERE upn.user_id = u.id),          (SELECT upn.city FROM user_profiles upn WHERE upn.user_id = u.id),          (SELECT upu.pendidikan_terakhir FROM ustadz_profiles upu WHERE upu.user_id = u.id),          (SELECT upu.point_label FROM ustadz_profiles upu WHERE upu.user_id = u.id),          (SELECT CAST(upu.point_lat AS DOUBLE) FROM ustadz_profiles upu WHERE upu.user_id = u.id), (SELECT CAST(upu.point_lng AS DOUBLE) FROM ustadz_profiles upu WHERE upu.user_id = u.id)          FROM users u LEFT JOIN user_profiles upn3 ON upn3.user_id = u.id WHERE (? IS NULL OR u.id < ?) AND (? IS NULL OR u.status = ?)          AND (? IS NULL OR EXISTS (SELECT 1 FROM user_roles ur2 JOIN roles r2 ON r2.id = ur2.role_id WHERE ur2.user_id = u.id AND r2.code = ?))          AND (? IS NULL OR u.email LIKE ? OR u.phone LIKE ?               OR EXISTS (SELECT 1 FROM user_profiles upn2 WHERE upn2.user_id = u.id AND upn2.full_name LIKE ?))          {} LIMIT ?",
+        srt.order_by("u.id")
+    );
+    if srt.custom {
+        sql.push_str(" OFFSET ?");
+    }
+    let mut qy = sqlx::query_as::<_, (
         i64, Option<String>, Option<String>, String, String, Option<String>, Option<String>,
         Option<String>, Option<String>, Option<String>, Option<String>, Option<f64>, Option<f64>,
-    )> = sqlx::query_as(
-        "SELECT u.id, u.email, u.phone, u.account_type, u.status,          (SELECT GROUP_CONCAT(r.code) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = u.id),          DATE_FORMAT(u.last_login_at, '%Y-%m-%dT%H:%i:%sZ'),          (SELECT upn.full_name FROM user_profiles upn WHERE upn.user_id = u.id),          (SELECT upn.city FROM user_profiles upn WHERE upn.user_id = u.id),          (SELECT upu.pendidikan_terakhir FROM ustadz_profiles upu WHERE upu.user_id = u.id),          (SELECT upu.point_label FROM ustadz_profiles upu WHERE upu.user_id = u.id),          (SELECT CAST(upu.point_lat AS DOUBLE) FROM ustadz_profiles upu WHERE upu.user_id = u.id), (SELECT CAST(upu.point_lng AS DOUBLE) FROM ustadz_profiles upu WHERE upu.user_id = u.id)          FROM users u WHERE (? IS NULL OR u.id < ?) AND (? IS NULL OR u.status = ?)          AND (? IS NULL OR EXISTS (SELECT 1 FROM user_roles ur2 JOIN roles r2 ON r2.id = ur2.role_id WHERE ur2.user_id = u.id AND r2.code = ?))          AND (? IS NULL OR u.email LIKE ? OR u.phone LIKE ?               OR EXISTS (SELECT 1 FROM user_profiles upn2 WHERE upn2.user_id = u.id AND upn2.full_name LIKE ?))          ORDER BY u.id DESC LIMIT ?")
+    )>(&sql)
         .bind(cursor).bind(cursor).bind(status.as_deref()).bind(status.as_deref())
         .bind(role.as_deref()).bind(role.as_deref())
-        .bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(limit + 1)
-        .fetch_all(&st.pool).await.map_err(dberr)?;
+        .bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(limit + 1);
+    if srt.custom {
+        qy = qy.bind((page.unwrap_or(1) - 1) * limit);
+    }
+    let rows = qy.fetch_all(&st.pool).await.map_err(dberr)?;
     let has_more = rows.len() as i64 > limit;
+    let next = if !srt.custom { rows.get(limit as usize).map(|r| r.0.to_string()) } else { None };
     let items: Vec<_> = rows.iter().take(limit as usize).map(|r| json!({
         "id": r.0, "email": r.1, "phone": r.2, "account_type": r.3, "status": r.4,
         "roles": r.5.as_deref().map(|s| s.split(',').collect::<Vec<_>>()), "last_login_at": r.6,
@@ -154,19 +184,30 @@ async fn users_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Query
             "label": r.10,
         })),
     })).collect();
-    Ok(ok(items, StatusCode::OK))
+    Ok(ok_paged(&items, next, has_more, StatusCode::OK))
 }
 
 // ===================== daftar khusus: SANTRI & USTADZ (field beda per jenis) =====================
+
+/// Kolom sort whitelist `/admin/santri`.
+const SANTRI_SORT: &[(&str, &str)] = &[
+    ("id", "u.id"),
+    ("full_name", "COALESCE(NULLIF(up.full_name,''),'')"),
+    ("status", "u.status"),
+    ("last_login_at", "u.last_login_at"),
+    ("deposit", "COALESCE(w.balance,0)"),
+];
 
 #[allow(clippy::type_complexity)]
 async fn santri_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, AppError> {
     cu.require("users.read")?;
     let status = q.get("status").cloned();
     let qq = q.get("q").map(|s| format!("%{s}%"));
-    let cursor: Option<i64> = q.get("cursor").and_then(|v| v.parse().ok());
     let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(20).clamp(1, 100);
-    let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>, String, Option<String>, i64, i64, i64)> = sqlx::query_as(
+    let page: Option<i64> = q.get("page").and_then(|v| v.parse().ok()).filter(|p| *p >= 1);
+    let srt = crate::shared::sorting::parse(q.get("sort").map(String::as_str), q.get("order").map(String::as_str), SANTRI_SORT, "u.id");
+    let cursor: Option<i64> = if srt.custom { None } else { q.get("cursor").and_then(|v| v.parse().ok()) };
+    let mut sql = format!(
         "SELECT u.id, COALESCE(NULLIF(up.full_name,''),'(tanpa nama)'), u.email, u.phone, up.city, u.status, \
          DATE_FORMAT(u.last_login_at, '%Y-%m-%dT%H:%i:%sZ'), COALESCE(w.balance, 0), \
          (SELECT COUNT(DISTINCT kp.campaign_id) FROM khatmil_participants kp \
@@ -180,26 +221,48 @@ async fn santri_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Quer
          WHERE (? IS NULL OR u.id < ?) AND (? IS NULL OR u.status = ?) \
            AND (? IS NULL OR u.email LIKE ? OR u.phone LIKE ? \
                 OR EXISTS (SELECT 1 FROM user_profiles upn2 WHERE upn2.user_id = u.id AND upn2.full_name LIKE ?)) \
-         ORDER BY u.id DESC LIMIT ?")
+         {} LIMIT ?",
+        srt.order_by("u.id")
+    );
+    if srt.custom {
+        sql.push_str(" OFFSET ?");
+    }
+    let mut qy = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<String>, String, Option<String>, i64, i64, i64)>(&sql)
         .bind(cursor).bind(cursor).bind(status.as_deref()).bind(status.as_deref())
-        .bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(limit + 1)
-        .fetch_all(&st.pool).await.map_err(dberr)?;
+        .bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(limit + 1);
+    if srt.custom {
+        qy = qy.bind((page.unwrap_or(1) - 1) * limit);
+    }
+    let rows = qy.fetch_all(&st.pool).await.map_err(dberr)?;
+    let has_more = rows.len() as i64 > limit;
+    let next = if !srt.custom { rows.get(limit as usize).map(|r| r.0.to_string()) } else { None };
     let items: Vec<_> = rows.iter().take(limit as usize).map(|r| json!({
         "id": r.0, "full_name": r.1, "email": r.2, "phone": r.3, "city": r.4,
         "status": r.5, "last_login_at": r.6, "deposit": r.7,
         "khatmil_aktif": r.8, "kunjungan_selesai": r.9,
     })).collect();
-    Ok(ok(items, StatusCode::OK))
+    Ok(ok_paged(&items, next, has_more, StatusCode::OK))
 }
+
+/// Kolom sort whitelist `/admin/ustadz`.
+const USTADZ_SORT: &[(&str, &str)] = &[
+    ("id", "u.id"),
+    ("full_name", "COALESCE(NULLIF(up.full_name,''),'')"),
+    ("status", "u.status"),
+    ("last_login_at", "u.last_login_at"),
+    ("saldo", "COALESCE(w.balance,0)"),
+];
 
 #[allow(clippy::type_complexity)]
 async fn ustadz_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, AppError> {
     cu.require("users.read")?;
     let status = q.get("status").cloned();
     let qq = q.get("q").map(|s| format!("%{s}%"));
-    let cursor: Option<i64> = q.get("cursor").and_then(|v| v.parse().ok());
     let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(20).clamp(1, 100);
-    let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>, String, Option<String>, i8, Option<String>, Option<i8>, Option<i64>, Option<f64>, i64, i64, i64)> = sqlx::query_as(
+    let page: Option<i64> = q.get("page").and_then(|v| v.parse().ok()).filter(|p| *p >= 1);
+    let srt = crate::shared::sorting::parse(q.get("sort").map(String::as_str), q.get("order").map(String::as_str), USTADZ_SORT, "u.id");
+    let cursor: Option<i64> = if srt.custom { None } else { q.get("cursor").and_then(|v| v.parse().ok()) };
+    let mut sql = format!(
         "SELECT u.id, COALESCE(NULLIF(up.full_name,''),'(tanpa nama)'), u.email, u.phone, up.city, u.status, \
          DATE_FORMAT(u.last_login_at, '%Y-%m-%dT%H:%i:%sZ'), \
          (up2.verified_at IS NOT NULL), up2.pendidikan_terakhir, vs.is_accepting, vs.price_per_hour, \
@@ -221,10 +284,21 @@ async fn ustadz_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Quer
          WHERE (? IS NULL OR u.id < ?) AND (? IS NULL OR u.status = ?) \
            AND (? IS NULL OR u.email LIKE ? OR u.phone LIKE ? \
                 OR EXISTS (SELECT 1 FROM user_profiles upn2 WHERE upn2.user_id = u.id AND upn2.full_name LIKE ?)) \
-         ORDER BY u.id DESC LIMIT ?")
+         {} LIMIT ?",
+        srt.order_by("u.id")
+    );
+    if srt.custom {
+        sql.push_str(" OFFSET ?");
+    }
+    let mut qy = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, Option<String>, String, Option<String>, i8, Option<String>, Option<i8>, Option<i64>, Option<f64>, i64, i64, i64)>(&sql)
         .bind(cursor).bind(cursor).bind(status.as_deref()).bind(status.as_deref())
-        .bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(limit + 1)
-        .fetch_all(&st.pool).await.map_err(dberr)?;
+        .bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(qq.as_deref()).bind(limit + 1);
+    if srt.custom {
+        qy = qy.bind((page.unwrap_or(1) - 1) * limit);
+    }
+    let rows = qy.fetch_all(&st.pool).await.map_err(dberr)?;
+    let has_more = rows.len() as i64 > limit;
+    let next = if !srt.custom { rows.get(limit as usize).map(|r| r.0.to_string()) } else { None };
     let items: Vec<_> = rows.iter().take(limit as usize).map(|r| json!({
         "id": r.0, "full_name": r.1, "email": r.2, "phone": r.3, "city": r.4,
         "status": r.5, "last_login_at": r.6,
@@ -233,7 +307,7 @@ async fn ustadz_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Quer
         "rating_avg": r.11, "rating_count": r.12,
         "saldo_penghasilan": r.13, "kunjungan_selesai": r.14,
     })).collect();
-    Ok(ok(items, StatusCode::OK))
+    Ok(ok_paged(&items, next, has_more, StatusCode::OK))
 }
 
 async fn users_patch(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>, Json(body): Json<serde_json::Value>) -> Result<Response, AppError> {
@@ -373,30 +447,51 @@ async fn ustadz_detail(cu: CurrentUser, State(st): State<AppState>, Path(id): Pa
 struct ReviewsQ {
     direction: Option<String>, // SANTRI_TO_USTADZ | USTADZ_TO_SANTRI
     cursor: Option<i64>,
+    sort: Option<String>,
+    order: Option<String>,
+    page: Option<i64>,
 }
+
+const REVIEWS_SORT: &[(&str, &str)] = &[
+    ("id", "vr.id"),
+    ("rating", "vr.rating"),
+    ("created_at", "vr.created_at"),
+];
 
 async fn admin_reviews(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<ReviewsQ>) -> Result<Response, AppError> {
     cu.require("visits.admin")?;
     let limit: i64 = 50;
-    let rows: Vec<(i64, i64, String, i64, String, i8, Option<String>, i8, Option<String>, String)> = sqlx::query_as(
+    let page: Option<i64> = q.page.filter(|p| *p >= 1);
+    let srt = crate::shared::sorting::parse(q.sort.as_deref(), q.order.as_deref(), REVIEWS_SORT, "vr.id");
+    let cursor: Option<i64> = if srt.custom { None } else { q.cursor };
+    let mut sql = format!(
         "SELECT vr.id, vr.visit_id, vr.direction, vr.reviewer_id, \
          COALESCE(NULLIF(rvp.full_name,''),'(tanpa nama)'), vr.rating, vr.comment, vr.hidden, \
          DATE_FORMAT(vr.revealed_at, '%Y-%m-%dT%H:%i:%sZ'), DATE_FORMAT(vr.created_at, '%Y-%m-%dT%H:%i:%sZ') \
          FROM visit_reviews vr \
          LEFT JOIN user_profiles rvp ON rvp.user_id = vr.reviewer_id \
          WHERE (? IS NULL OR vr.direction = ?) AND (? IS NULL OR vr.id < ?) \
-         ORDER BY vr.id DESC LIMIT ?")
+         {} LIMIT ?",
+        srt.order_by("vr.id")
+    );
+    if srt.custom {
+        sql.push_str(" OFFSET ?");
+    }
+    let mut qy = sqlx::query_as::<_, (i64, i64, String, i64, String, i8, Option<String>, i8, Option<String>, String)>(&sql)
         .bind(q.direction.as_deref()).bind(q.direction.as_deref())
-        .bind(q.cursor).bind(q.cursor).bind(limit + 1)
-        .fetch_all(&st.pool).await.map_err(dberr)?;
+        .bind(cursor).bind(cursor).bind(limit + 1);
+    if srt.custom {
+        qy = qy.bind((page.unwrap_or(1) - 1) * limit);
+    }
+    let rows = qy.fetch_all(&st.pool).await.map_err(dberr)?;
     let has_more = rows.len() as i64 > limit;
+    let next = if !srt.custom { rows.get(limit as usize).map(|r| r.0.to_string()) } else { None };
     let items: Vec<_> = rows.iter().take(limit as usize).map(|r| json!({
         "id": r.0, "visit_id": r.1, "direction": r.2, "reviewer_id": r.3,
         "reviewer_name": r.4, "rating": r.5, "comment": r.6, "hidden": r.7 != 0,
         "revealed": r.8.is_some(), "created_at": r.9,
     })).collect();
-    let next = if has_more { rows.get(limit as usize).map(|r| r.0.to_string()) } else { None };
-    Ok(ok(json!({ "items": items, "meta": { "pagination": { "next_cursor": next, "has_more": has_more } } }), StatusCode::OK))
+    Ok(ok_paged(&items, next, has_more, StatusCode::OK))
 }
 
 async fn admin_review_hide(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {

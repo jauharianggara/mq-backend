@@ -1011,25 +1011,45 @@ pub async fn complete_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64
 
 // ===================== admin =====================
 
-pub async fn admin_list_visits(pool: &MySqlPool, f: &AdminVisitFilter, limit: i64) -> Result<(Vec<VisitOut>, Option<String>), AppError> {
-    let rows: Vec<(i64,)> = sqlx::query_as(
-        "SELECT id FROM ustadz_visits \
-         WHERE (? IS NULL OR status = ?) AND (? IS NULL OR ustadz_id = ?) AND (? IS NULL OR user_id = ?) \
-           AND (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?")
+/// Kolom sort whitelist `/admin/visits`.
+const ADMIN_VISITS_SORT: &[(&str, &str)] = &[
+    ("id", "v.id"),
+    ("scheduled_at", "v.scheduled_at"),
+    ("price_total", "v.price_total"),
+    ("status", "v.status"),
+];
+
+pub async fn admin_list_visits(pool: &MySqlPool, f: &AdminVisitFilter, limit: i64) -> Result<(Vec<VisitOut>, Option<String>, bool), AppError> {
+    let page: Option<i64> = f.page.filter(|p| *p >= 1);
+    let srt = crate::shared::sorting::parse(f.sort.as_deref(), f.order.as_deref(), ADMIN_VISITS_SORT, "v.id");
+    let cursor: Option<i64> = if srt.custom { None } else { f.cursor };
+    let mut sql = format!(
+        "SELECT id FROM ustadz_visits v \
+         WHERE (? IS NULL OR v.status = ?) AND (? IS NULL OR v.ustadz_id = ?) AND (? IS NULL OR v.user_id = ?) \
+           AND (? IS NULL OR v.id < ?) {} LIMIT ?",
+        srt.order_by("v.id")
+    );
+    if srt.custom {
+        sql.push_str(" OFFSET ?");
+    }
+    let mut qy = sqlx::query_as::<_, (i64,)>(&sql)
         .bind(&f.status).bind(&f.status)
         .bind(f.ustadz_id).bind(f.ustadz_id)
         .bind(f.user_id).bind(f.user_id)
-        .bind(f.cursor).bind(f.cursor).bind(limit + 1)
-        .fetch_all(pool).await.map_err(dberr)?;
+        .bind(cursor).bind(cursor).bind(limit + 1);
+    if srt.custom {
+        qy = qy.bind((page.unwrap_or(1) - 1) * limit);
+    }
+    let rows = qy.fetch_all(pool).await.map_err(dberr)?;
+    let has_more = rows.len() as i64 > limit;
+    let next = if !srt.custom { rows.get(limit as usize).map(|r| r.0.to_string()) } else { None };
     let mut out = Vec::new();
-    let mut next = None;
-    for (i, (id,)) in rows.into_iter().enumerate() {
-        if (i as i64) == limit { next = Some(id.to_string()); break; }
+    for (id,) in rows.into_iter().take(limit as usize) {
         if let Some(v) = fetch_visit(pool, id).await? {
             out.push(visit_out(pool, &v, None).await?);
         }
     }
-    Ok((out, next))
+    Ok((out, next, has_more))
 }
 
 pub async fn admin_force_complete(state: &AppState, admin_id: i64, visit_id: i64) -> Result<VisitOut, AppError> {

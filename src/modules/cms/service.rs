@@ -174,8 +174,53 @@ pub async fn admin_delete(cu: CurrentUser, State(st): State<AppState>, Path((ent
 }
 
 pub fn admin_routes() -> axum::Router<AppState> {
-    use axum::routing::{delete, patch, post};
+    use axum::routing::{delete, get, patch, post};
     axum::Router::new()
-        .route("/admin/cms/{entity}", post(admin_create))
+        .route("/admin/cms/{entity}", get(admin_list).post(admin_create))
         .route("/admin/cms/{entity}/{id}", patch(admin_update).delete(admin_delete))
+}
+
+/// GET /admin/cms/{entity} — list semua baris utk admin (kecil, tanpa pagination).
+/// Kolom eksplisit per entity (selaras skema DB & form FE).
+pub async fn admin_list(cu: CurrentUser, State(st): State<AppState>, Path(entity): Path<String>) -> Result<Response, AppError> {
+    cu.require("cms.manage")?;
+    use axum::http::StatusCode;
+    let pool = &st.pool;
+    let items: serde_json::Value = match entity.as_str() {
+        "articles" => {
+            let rows: Vec<(i64, String, String, Option<String>, String)> = sqlx::query_as(
+                "SELECT id, slug, title, excerpt, status FROM articles ORDER BY id DESC LIMIT 200")
+                .fetch_all(pool).await.map_err(dberr)?;
+            serde_json::json!(rows.iter().map(|r| serde_json::json!({
+                "id": r.0, "slug": r.1, "title": r.2, "excerpt": r.3, "status": r.4,
+            })).collect::<Vec<_>>())
+        }
+        "banners" => {
+            let rows: Vec<(i64, String, Option<String>, Option<i64>, Option<String>, Option<String>, i64, Option<i8>, Option<i8>)> = sqlx::query_as(
+                "SELECT id, title, position, sort_order, target_type, target_value, COALESCE(is_active,1), COALESCE(image_media_id,0) FROM banners ORDER BY id DESC LIMIT 200")
+                .fetch_all(pool).await.map_err(dberr)?;
+            serde_json::json!(rows.iter().map(|r| serde_json::json!({
+                "id": r.0, "title": r.1, "position": r.2, "sort_order": r.3,
+                "target_type": r.4, "target_value": r.5, "is_active": r.6 != 0, "image_media_id": r.7,
+            })).collect::<Vec<_>>())
+        }
+        "announcements" => {
+            let rows: Vec<(i64, String, Option<String>, Option<String>, Option<i8>)> = sqlx::query_as(
+                "SELECT id, title, body, level, COALESCE(is_active,1) FROM announcements ORDER BY id DESC LIMIT 200")
+                .fetch_all(pool).await.map_err(dberr)?;
+            serde_json::json!(rows.iter().map(|r| serde_json::json!({
+                "id": r.0, "title": r.1, "body": r.2, "level": r.3, "is_active": r.4.map(|v| v != 0).unwrap_or(true),
+            })).collect::<Vec<_>>())
+        }
+        "faqs" => {
+            let rows: Vec<(i64, String, Option<String>, i64, Option<i8>)> = sqlx::query_as(
+                "SELECT id, question, answer, sort_order, COALESCE(is_active,1) FROM faqs ORDER BY sort_order, id LIMIT 200")
+                .fetch_all(pool).await.map_err(dberr)?;
+            serde_json::json!(rows.iter().map(|r| serde_json::json!({
+                "id": r.0, "question": r.1, "answer": r.2, "sort_order": r.3, "is_active": r.4.map(|v| v != 0).unwrap_or(true),
+            })).collect::<Vec<_>>())
+        }
+        _ => return Err(AppError::NotFound("entity tidak dikenal".into())),
+    };
+    Ok(ok(items, StatusCode::OK))
 }
