@@ -56,8 +56,8 @@ fn pct(part: i64, total: i64) -> Option<f64> {
 // =====================================================================
 
 pub async fn list_campaigns(pool: &MySqlPool, status: Option<String>) -> Result<Vec<CampaignOut>, AppError> {
-    let rows: Vec<(i64, String, String, Option<String>, Option<i64>, String, String, i64, i64, i8, i64, i64, f64, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT c.id, c.slug, c.name, c.description, c.max_participants, c.mode, c.status, c.target_khataman, c.min_minutes_per_juz, c.require_manual_verification, \
+    let rows: Vec<(i64, String, String, Option<String>, Option<i64>, String, String, i64, i64, i64, i8, i64, i64, f64, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT c.id, c.slug, c.name, c.description, c.max_participants, c.mode, c.status, c.target_khataman, c.group_count, c.min_minutes_per_juz, c.require_manual_verification, \
          (SELECT COUNT(*) FROM khatmil_participants p WHERE p.campaign_id = c.id), \
          (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.campaign_id = c.id AND a.status = 'COMPLETED'), \
          CAST(IFNULL(ROUND(100.0 * (SELECT COUNT(*) FROM khatmil_juz_assignments a2 WHERE a2.campaign_id = c.id AND a2.status = 'COMPLETED') / 30, 1), 0) AS DOUBLE), \
@@ -67,9 +67,9 @@ pub async fn list_campaigns(pool: &MySqlPool, status: Option<String>) -> Result<
         .fetch_all(pool).await.map_err(dberr)?;
     Ok(rows.into_iter().map(|r| CampaignOut {
         id: r.0, slug: r.1, name: r.2, description: r.3, max_participants: r.4, mode: r.5, status: r.6,
-        target_khataman: r.7, min_minutes_per_juz: r.8, require_manual_verification: r.9 != 0,
-        participants: r.10, juz_completed: r.11, progress_pct: r.12,
-        period_start: r.13, period_end: r.14,
+        target_khataman: r.7, group_count: r.8, min_minutes_per_juz: r.9, require_manual_verification: r.10 != 0,
+        participants: r.11, juz_completed: r.12, progress_pct: r.13,
+        period_start: r.14, period_end: r.15,
     }).collect())
 }
 
@@ -81,11 +81,12 @@ pub async fn create_campaign(pool: &MySqlPool, created_by: i64, req: CampaignUps
         return Err(AppError::Conflict("slug sudah dipakai".into()));
     }
     let ins = sqlx::query(
-        "INSERT INTO khatmil_campaigns (slug, name, description, mode, status, target_khataman, \
+        "INSERT INTO khatmil_campaigns (slug, name, description, mode, status, target_khataman, group_count, \
          period_start, period_end, min_minutes_per_juz, require_manual_verification, max_participants, created_by) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .bind(&req.slug).bind(&req.name).bind(&req.description)
         .bind(&req.mode).bind(&req.status).bind(req.target_khataman)
+        .bind(req.group_count.unwrap_or(1))
         .bind(parse_date(req.period_start.as_deref())?).bind(parse_date(req.period_end.as_deref())?)
         .bind(req.min_minutes_per_juz).bind(req.require_manual_verification)
         .bind(req.max_participants).bind(created_by)
@@ -104,20 +105,37 @@ fn transition_ok(from: &str, to: &str) -> bool {
 
 pub async fn update_campaign(pool: &MySqlPool, id: i64, req: CampaignUpsertReq) -> Result<(), AppError> {
     validate_upsert(&req)?;
-    let cur: Option<(String,)> = sqlx::query_as("SELECT status FROM khatmil_campaigns WHERE id = ?")
+    let cur: Option<(String, i64)> = sqlx::query_as("SELECT status, group_count FROM khatmil_campaigns WHERE id = ?")
         .bind(id).fetch_optional(pool).await.map_err(dberr)?;
-    let (cur,) = cur.ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
+    let (cur, cur_gc) = cur.ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
     if !transition_ok(&cur, &req.status) {
         return Err(AppError::Conflict(format!("invalid_status_transition: {cur} -> {}", req.status)));
     }
+    let gc = req.group_count.unwrap_or(cur_gc);
+    if gc < cur_gc {
+        // guard: kelompok yang mau dipangkas tidak boleh berisi assignment (aktif maupun arsip)
+        let n: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM khatmil_juz_assignments a JOIN khatmil_groups g ON g.id = a.group_id \
+             WHERE g.campaign_id = ? AND g.group_no > ?")
+            .bind(id).bind(gc).fetch_one(pool).await.map_err(dberr)?;
+        if n.0 > 0 {
+            let lo = gc + 1;
+            return Err(AppError::Conflict(format!(
+                "kelompok {lo} s.d. {cur_gc} masih berisi assignment — tidak bisa dipangkas")));
+        }
+    }
     let n = sqlx::query(
-        "UPDATE khatmil_campaigns SET name = ?, description = ?, mode = ?, status = ?, target_khataman = ?, \
+        "UPDATE khatmil_campaigns SET name = ?, description = ?, mode = ?, status = ?, target_khataman = ?, group_count = ?, \
          period_start = ?, period_end = ?, min_minutes_per_juz = ?, require_manual_verification = ?, max_participants = ? WHERE id = ?")
-        .bind(&req.name).bind(&req.description).bind(&req.mode).bind(&req.status).bind(req.target_khataman)
+        .bind(&req.name).bind(&req.description).bind(&req.mode).bind(&req.status).bind(req.target_khataman).bind(gc)
         .bind(parse_date(req.period_start.as_deref())?).bind(parse_date(req.period_end.as_deref())?)
         .bind(req.min_minutes_per_juz).bind(req.require_manual_verification).bind(req.max_participants).bind(id)
         .execute(pool).await.map_err(dberr)?.rows_affected();
     if n == 0 { return Err(AppError::NotFound("campaign tidak ada".into())); }
+    if gc > cur_gc {
+        // jumlah kelompok naik → pastikan baris kelompok baru tersedia (idempotent)
+        crate::modules::khatmil::penugasan::ensure_groups(pool, id).await?;
+    }
     Ok(())
 }
 
@@ -130,6 +148,11 @@ fn validate_upsert(req: &CampaignUpsertReq) -> Result<(), AppError> {
     }
     if !(1..=600).contains(&req.min_minutes_per_juz) {
         return Err(AppError::Unprocessable("min_minutes_per_juz 1-600".into()));
+    }
+    if let Some(gc) = req.group_count {
+        if !(1..=10).contains(&gc) {
+            return Err(AppError::Unprocessable("group_count 1-10".into()));
+        }
     }
     Ok(())
 }
@@ -147,16 +170,16 @@ fn parse_date(d: Option<&str>) -> Result<Option<chrono::NaiveDate>, AppError> {
 // =====================================================================
 
 pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail, AppError> {
-    let base: Option<(i64, String, String, Option<String>, Option<i64>, String, String, i64, i64, i8, i64, i64, f64, Option<String>, Option<String>)> =
+    let base: Option<(i64, String, String, Option<String>, Option<i64>, String, String, i64, i64, i64, i8, i64, i64, f64, Option<String>, Option<String>)> =
         sqlx::query_as(
-            "SELECT c.id, c.slug, c.name, c.description, c.max_participants, c.mode, c.status, c.target_khataman, c.min_minutes_per_juz, c.require_manual_verification, \
+            "SELECT c.id, c.slug, c.name, c.description, c.max_participants, c.mode, c.status, c.target_khataman, c.group_count, c.min_minutes_per_juz, c.require_manual_verification, \
              (SELECT COUNT(*) FROM khatmil_participants p WHERE p.campaign_id = c.id), \
              (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.campaign_id = c.id AND a.status = 'COMPLETED'), \
              CAST(IFNULL(ROUND(100.0 * (SELECT COUNT(*) FROM khatmil_juz_assignments a2 WHERE a2.campaign_id = c.id AND a2.status = 'COMPLETED') / 30, 1), 0) AS DOUBLE), \
              DATE_FORMAT(c.period_start, '%Y-%m-%d'), DATE_FORMAT(c.period_end, '%Y-%m-%d') \
              FROM khatmil_campaigns c WHERE c.id = ?")
         .bind(id).fetch_optional(pool).await.map_err(dberr)?;
-    let (cid, slug, name, descr, maxp, mode, status, target, minmin, rmv, participants, completed, _pct_base, ps, pe) = base
+    let (cid, slug, name, descr, maxp, mode, status, target, gc, minmin, rmv, participants, completed, _pct_base, ps, pe) = base
         .ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
     // peta 30 juz — assignment terbaru per juz apa pun statusnya (juz COMPLETED tetap terlihat)
     let rows: Vec<(i64, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<String>, i64, Option<i64>)> =
@@ -194,18 +217,18 @@ pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail
         current_surah: r.5, current_ayah: r.6, completed_at: r.7,
         progress_pct: pct(r.9.unwrap_or(0), r.8),
     }).collect();
-    let groups: Vec<(i64, i64, i64, Option<String>)> = sqlx::query_as(
-        "SELECT g.id, g.group_no,          (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.group_id = g.id AND a.active_marker IS NOT NULL),          (SELECT COALESCE(NULLIF(upn.full_name,''),'Ustadz') FROM khatmil_groups g2             LEFT JOIN user_profiles upn ON upn.user_id = g2.ustadz_id WHERE g2.id = g.id)          FROM khatmil_groups g WHERE g.campaign_id = ? ORDER BY g.group_no")
+    let groups: Vec<(i64, i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT g.id, g.group_no,          (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.group_id = g.id AND a.active_marker IS NOT NULL),          (SELECT NULLIF(upn.full_name,'') FROM khatmil_groups g2             LEFT JOIN user_profiles upn ON upn.user_id = g2.ustadz_id WHERE g2.id = g.id),          (SELECT upn3.full_name FROM khatmil_groups g4             LEFT JOIN user_profiles upn3 ON upn3.user_id = g4.pending_ustadz_id WHERE g4.id = g.id AND g4.pending_ustadz_id IS NOT NULL)          FROM khatmil_groups g WHERE g.campaign_id = ? AND g.group_no <= (SELECT c2.group_count FROM khatmil_campaigns c2 WHERE c2.id = g.campaign_id) ORDER BY g.group_no")
         .bind(id).fetch_all(pool).await.map_err(dberr)?;
     let groups: Vec<crate::modules::khatmil::dto::GroupLite> = groups.into_iter()
-        .map(|(id, no, cnt, pemb)| crate::modules::khatmil::dto::GroupLite {
-            id, group_no: no, member_count: cnt, pembina: pemb })
+        .map(|(id, no, cnt, pemb, pend)| crate::modules::khatmil::dto::GroupLite {
+            id, group_no: no, member_count: cnt, pembina: pemb, pending_pembina: pend })
         .collect();
 
     Ok(CampaignDetail {
         campaign: CampaignOut {
             id: cid, slug, name, description: descr, max_participants: maxp, mode, status, target_khataman: target,
-            min_minutes_per_juz: minmin, require_manual_verification: rmv != 0,
+            group_count: gc, min_minutes_per_juz: minmin, require_manual_verification: rmv != 0,
             participants, juz_completed: completed, progress_pct: pctv.unwrap_or(0.0),
             period_start: ps.clone(), period_end: pe.clone(),
         },
@@ -273,7 +296,7 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Op
     // ATURAN: kelompok — pilih sendiri bila campaign punya >1 kelompok
     crate::modules::khatmil::penugasan::ensure_groups(pool, campaign_id).await?;
     let groups: Vec<(i64, i64, i64)> = sqlx::query_as(
-        "SELECT g.id, g.group_no,          (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.group_id = g.id AND a.active_marker IS NOT NULL)          FROM khatmil_groups g WHERE g.campaign_id = ? ORDER BY g.group_no")
+        "SELECT g.id, g.group_no,          (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.group_id = g.id AND a.active_marker IS NOT NULL)          FROM khatmil_groups g WHERE g.campaign_id = ? AND g.group_no <= (SELECT c2.group_count FROM khatmil_campaigns c2 WHERE c2.id = g.campaign_id) ORDER BY g.group_no")
         .bind(campaign_id).fetch_all(pool).await.map_err(dberr)?;
     let group_id: i64 = if groups.len() <= 1 {
         groups.first().map(|g| g.0).ok_or_else(|| {

@@ -11,6 +11,9 @@ pub struct CampaignUpsertReq {
     pub mode: String,
     #[serde(default = "default_target")]
     pub target_khataman: i64,
+    /// Jumlah kelompok per campaign (khatmil v2). None = tak diubah (PATCH kompatibel lama); create default 1.
+    #[serde(default)]
+    pub group_count: Option<i64>,
     #[serde(default)]
     pub period_start: Option<String>,
     #[serde(default)]
@@ -39,6 +42,7 @@ pub struct CampaignOut {
     pub mode: String,
     pub status: String,
     pub target_khataman: i64,
+    pub group_count: i64,
     pub min_minutes_per_juz: i64,
     pub require_manual_verification: bool,
     pub participants: i64,
@@ -168,4 +172,7 @@ pub struct GroupLite {
     pub group_no: i64,
     pub member_count: i64,
     pub pembina: Option<String>,
+    /// Nama ustadz yang menunggu ACC penugasan (badge "Menunggu ACC" di admin).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_pembina: Option<String>,
 }

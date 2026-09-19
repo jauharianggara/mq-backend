@@ -128,7 +128,8 @@ pub async fn admin_assign_pembina(cu: CurrentUser, State(st): State<AppState>, P
     // pastikan baris kelompok tersedia (campaign lama bisa belum punya), lalu resolve id
     penugasan::ensure_groups(&st.pool, p.campaign_id).await?;
     let gid: (i64,) = sqlx::query_as(
-        "SELECT id FROM khatmil_groups WHERE campaign_id = ? AND group_no = ?")
+        "SELECT g.id FROM khatmil_groups g JOIN khatmil_campaigns c ON c.id = g.campaign_id \
+         WHERE g.campaign_id = ? AND g.group_no = ? AND g.group_no <= c.group_count")
         .bind(p.campaign_id).bind(p.group_no).fetch_one(&st.pool).await.map_err(|e| {
             tracing::error!("db: {e}");
             AppError::NotFound("kelompok tidak ada".into())
