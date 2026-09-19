@@ -52,6 +52,17 @@ pub struct CampaignOut {
     pub period_start: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub period_end: Option<String>,
+    /// Rincian progres per kelompok (utk list multi-kelompok — rev 3);
+    /// kosong = campaign 1 kelompok / detail (detail sudah punya groups + juz_map_groups).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups_progress: Vec<GroupProgressLite>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupProgressLite {
+    pub group_no: i64,
+    pub member_count: i64,   // assignment aktif (active_marker IS NOT NULL)
+    pub completed_juz: i64,  // juz yg assignment TERBARU-nya COMPLETED (pola MAX(id) per juz)
 }
 
 #[derive(Debug, Serialize)]

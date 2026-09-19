@@ -65,11 +65,33 @@ pub async fn list_campaigns(pool: &MySqlPool, status: Option<String>) -> Result<
          FROM khatmil_campaigns c WHERE (? IS NULL OR c.status = ?) ORDER BY c.id DESC")
         .bind(status.as_deref()).bind(status.as_deref())
         .fetch_all(pool).await.map_err(dberr)?;
+    // rincian progres per kelompok (list multi-kelompok — rev 3, additive)
+    let cids: Vec<i64> = rows.iter().map(|r| r.0).collect();
+    let mut gprog: std::collections::HashMap<i64, Vec<crate::modules::khatmil::dto::GroupProgressLite>> = std::collections::HashMap::new();
+    if !cids.is_empty() {
+        let placeholders = cids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!(
+            "SELECT g.campaign_id, g.group_no, \
+             (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.group_id = g.id AND a.active_marker IS NOT NULL), \
+             (SELECT COUNT(*) FROM (SELECT MAX(a2.id) AS mid FROM khatmil_juz_assignments a2 WHERE a2.group_id = g.id GROUP BY a2.juz) m \
+               JOIN khatmil_juz_assignments a3 ON a3.id = m.mid WHERE a3.status = 'COMPLETED') \
+             FROM khatmil_groups g \
+             WHERE g.campaign_id IN ({placeholders}) AND g.group_no <= (SELECT c2.group_count FROM khatmil_campaigns c2 WHERE c2.id = g.campaign_id) \
+             ORDER BY g.campaign_id, g.group_no");
+        let mut q = sqlx::query_as::<_, (i64, i64, i64, i64)>(&sql);
+        for id in &cids { q = q.bind(id); }
+        let grows: Vec<(i64, i64, i64, i64)> = q.fetch_all(pool).await.map_err(dberr)?;
+        for g in grows {
+            gprog.entry(g.0).or_default().push(crate::modules::khatmil::dto::GroupProgressLite {
+                group_no: g.1, member_count: g.2, completed_juz: g.3 });
+        }
+    }
     Ok(rows.into_iter().map(|r| CampaignOut {
         id: r.0, slug: r.1, name: r.2, description: r.3, max_participants: r.4, mode: r.5, status: r.6,
         target_khataman: r.7, group_count: r.8, min_minutes_per_juz: r.9, require_manual_verification: r.10 != 0,
         participants: r.11, juz_completed: r.12, progress_pct: r.13,
         period_start: r.14, period_end: r.15,
+        groups_progress: gprog.remove(&r.0).unwrap_or_default(),
     }).collect())
 }
 
@@ -267,6 +289,7 @@ pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail
             group_count: gc, min_minutes_per_juz: minmin, require_manual_verification: rmv != 0,
             participants, juz_completed: completed, progress_pct: pctv.unwrap_or(0.0),
             period_start: ps.clone(), period_end: pe.clone(),
+            groups_progress: Vec::new(),
         },
         juz_map, groups, juz_map_groups, period_start: ps, period_end: pe,
     })
