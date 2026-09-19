@@ -225,6 +225,42 @@ pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail
             id, group_no: no, member_count: cnt, pembina: pemb, pending_pembina: pend })
         .collect();
 
+    // peta juz PER KELOMPOK — assignment terbaru per juz per kelompok
+    // (assignment legacy group_id NULL dianggap milik kelompok 1)
+    let gmap: Vec<(i64, i64, i64, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<String>, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT g.group_no, g.id, j.j, a.status, \
+         (SELECT p2.full_name FROM user_profiles p2 JOIN khatmil_participants pp ON pp.user_id = p2.user_id WHERE pp.id = a.participant_id), \
+         pg.pages_read, pg.minutes_read, pg.current_surah_id, pg.current_ayah, DATE_FORMAT(pg.verified_at, '%Y-%m-%dT%H:%i:%sZ'), \
+         (SELECT COUNT(*) FROM quran_ayahs qa WHERE qa.juz = j.j), \
+         CASE WHEN pg.current_surah_id IS NOT NULL THEN \
+           (SELECT COUNT(*) FROM quran_ayahs qb WHERE qb.juz = j.j AND (qb.surah_id * 1000 + qb.ayah_number) <= (pg.current_surah_id * 1000 + pg.current_ayah)) \
+         END \
+         FROM khatmil_groups g \
+         JOIN (SELECT 1 j UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9 UNION SELECT 10 \
+               UNION SELECT 11 UNION SELECT 12 UNION SELECT 13 UNION SELECT 14 UNION SELECT 15 UNION SELECT 16 UNION SELECT 17 UNION SELECT 18 UNION SELECT 19 UNION SELECT 20 \
+               UNION SELECT 21 UNION SELECT 22 UNION SELECT 23 UNION SELECT 24 UNION SELECT 25 UNION SELECT 26 UNION SELECT 27 UNION SELECT 28 UNION SELECT 29 UNION SELECT 30) j \
+         LEFT JOIN khatmil_juz_assignments a ON a.campaign_id = ? AND a.juz = j.j \
+              AND (a.group_id = g.id OR (a.group_id IS NULL AND g.group_no = 1)) \
+              AND a.id = (SELECT MAX(a2.id) FROM khatmil_juz_assignments a2 WHERE a2.campaign_id = ? AND a2.juz = j.j \
+                   AND (a2.group_id = g.id OR (a2.group_id IS NULL AND g.group_no = 1))) \
+         LEFT JOIN khatmil_progress pg ON pg.assignment_id = a.id \
+         WHERE g.campaign_id = ? AND g.group_no <= (SELECT c2.group_count FROM khatmil_campaigns c2 WHERE c2.id = g.campaign_id) \
+         ORDER BY g.group_no, j.j")
+        .bind(id).bind(id).bind(id).fetch_all(pool).await.map_err(dberr)?;
+    let mut juz_map_groups: Vec<crate::modules::khatmil::dto::GroupJuzMap> = groups.iter()
+        .map(|g| crate::modules::khatmil::dto::GroupJuzMap {
+            group_no: g.group_no, group_id: g.id, slots: Vec::new() })
+        .collect();
+    for r in gmap {
+        if let Some(gm) = juz_map_groups.iter_mut().find(|x| x.group_no == r.0) {
+            gm.slots.push(JuzSlot {
+                juz: r.2, status: r.3, owner_name: r.4, pages_read: r.5, minutes_read: r.6,
+                current_surah: r.7, current_ayah: r.8, completed_at: r.9,
+                progress_pct: pct(r.11.unwrap_or(0), r.10),
+            });
+        }
+    }
+
     Ok(CampaignDetail {
         campaign: CampaignOut {
             id: cid, slug, name, description: descr, max_participants: maxp, mode, status, target_khataman: target,
@@ -232,7 +268,7 @@ pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail
             participants, juz_completed: completed, progress_pct: pctv.unwrap_or(0.0),
             period_start: ps.clone(), period_end: pe.clone(),
         },
-        juz_map, groups, period_start: ps, period_end: pe,
+        juz_map, groups, juz_map_groups, period_start: ps, period_end: pe,
     })
 }
 

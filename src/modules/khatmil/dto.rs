@@ -74,8 +74,19 @@ pub struct CampaignDetail {
     pub juz_map: Vec<JuzSlot>,
     #[serde(default)]
     pub groups: Vec<GroupLite>,
+    /// Peta juz PER KELOMPOK (assignment terbaru per juz di kelompok tsb;
+    /// assignment legacy group_id NULL dihitung ke kelompok 1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub juz_map_groups: Vec<GroupJuzMap>,
     pub period_start: Option<String>,
     pub period_end: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GroupJuzMap {
+    pub group_no: i64,
+    pub group_id: i64,
+    pub slots: Vec<JuzSlot>,
 }
 
 #[derive(Debug, Deserialize)]
