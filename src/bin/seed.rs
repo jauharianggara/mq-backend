@@ -14,8 +14,6 @@ const ROLES: &[(&str, &str, &str)] = &[
 /// (module, code, description)
 const PERMISSIONS: &[(&str, &str, &str)] = &[
     ("quran", "quran.read", "Baca data Al-Quran"),
-    ("learning", "learning.read", "Baca materi pembelajaran"),
-    ("cms", "cms.read", "Baca konten CMS published"),
     ("media", "media.upload", "Upload media (presign)"),
     ("notification", "notification.read.self", "Baca notifikasi sendiri"),
     ("account", "account.delete", "Hapus akun sendiri (PDP)"),
@@ -31,8 +29,6 @@ const PERMISSIONS: &[(&str, &str, &str)] = &[
     ("ustadz", "ustadz.profile.self", "Kelola profil & availability ustadz"),
     ("users", "users.read", "Lihat daftar pengguna"),
     ("users", "users.manage", "Kelola pengguna & status akun"),
-    ("learning", "learning.manage", "Kelola materi pembelajaran"),
-    ("cms", "cms.manage", "Kelola konten CMS"),
     ("dashboard", "dashboard.view", "Lihat dashboard admin"),
     ("settings", "settings.manage", "Ubah settings"),
     ("audit", "audit.read", "Baca audit log"),
@@ -45,31 +41,31 @@ const PERMISSIONS: &[(&str, &str, &str)] = &[
 /// role_code -> [permission codes] (sinkron docs/permissions.md)
 const ROLE_PERMISSIONS: &[(&str, &[&str])] = &[
     ("SUPER_ADMIN", &[
-        "quran.read", "learning.read", "cms.read", "media.upload", "notification.read.self",
+        "quran.read", "media.upload", "notification.read.self",
         "account.delete", "khatmil.read", "khatmil.manage", "question.moderate",
-        "question.publish.moderate", "users.read", "users.manage", "learning.manage",
-        "cms.manage", "dashboard.view", "settings.manage", "audit.read", "roles.manage",
+        "question.publish.moderate", "users.read", "users.manage",
+        "dashboard.view", "settings.manage", "audit.read", "roles.manage",
         "visits.admin",
     ]),
     ("ADMIN", &[
-        "quran.read", "learning.read", "cms.read", "media.upload", "notification.read.self",
+        "quran.read", "media.upload", "notification.read.self",
         "account.delete", "khatmil.read", "khatmil.manage", "question.moderate",
-        "question.publish.moderate", "users.read", "users.manage", "learning.manage",
-        "cms.manage", "dashboard.view", "settings.manage", "audit.read",
+        "question.publish.moderate", "users.read", "users.manage",
+        "dashboard.view", "settings.manage", "audit.read",
         "visits.admin",
     ]),
     ("MODERATOR", &[
-        "quran.read", "learning.read", "cms.read", "notification.read.self", "account.delete",
+        "quran.read", "notification.read.self", "account.delete",
         "khatmil.read", "question.moderate", "question.publish.moderate", "users.read",
         "visits.admin",   // fokus: moderasi review (hide/unhide) + monitoring
     ]),
     ("USTADZ", &[
-        "quran.read", "learning.read", "cms.read", "media.upload", "notification.read.self",
+        "quran.read", "media.upload", "notification.read.self",
         "account.delete", "khatmil.read", "memorization.review", "question.answer",
         "ustadz.profile.self", "ustadz.visits.manage",
     ]),
     ("SANTRI", &[
-        "quran.read", "learning.read", "cms.read", "media.upload", "notification.read.self",
+        "quran.read", "media.upload", "notification.read.self",
         "account.delete", "memorization.submit", "khatmil.join", "khatmil.read",
         "question.create", "visits.book",
     ]),

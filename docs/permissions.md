@@ -6,8 +6,6 @@ Sumber kebenaran implementasi: `src/bin/seed.rs` (idempotent).
 | Permission | SUPER_ADMIN | ADMIN | MODERATOR | USTADZ | SANTRI | Endpoint inti |
 |---|:-:|:-:|:-:|:-:|:-:|---|
 | quran.read | ✓ | ✓ | ✓ | ✓ | ✓ | `GET /quran/*` |
-| learning.read | ✓ | ✓ | ✓ | ✓ | ✓ | `GET /learning/*` |
-| cms.read | ✓ | ✓ | ✓ | ✓ | ✓ | `GET /cms/*` (published) |
 | media.upload | ✓ | ✓ | | ✓ | ✓ | `POST /media/uploads*` |
 | notification.read.self | ✓ | ✓ | ✓ | ✓ | ✓ | `GET /me/notifications*` |
 | account.delete | ✓ | ✓ | ✓ | ✓ | ✓ | `DELETE /me` |
@@ -22,9 +20,7 @@ Sumber kebenaran implementasi: `src/bin/seed.rs` (idempotent).
 | question.publish.moderate | | ✓ | ✓ | | | approve/reject publish |
 | users.read | ✓ | ✓ | ✓ | | | admin users list |
 | users.manage | ✓ | ✓ | | | | admin CRUD user/status |
-| learning.manage | ✓ | ✓ | | | | CRUD learning_materials |
 | khatmil.manage | ✓ | ✓ | | | | CRUD campaign |
-| cms.manage | ✓ | ✓ | | | | CRUD cms |
 | dashboard.view | ✓ | ✓ | | | | admin dashboard |
 | settings.manage | ✓ | ✓ | | | | settings key-value |
 | audit.read | ✓ | ✓ | | | | audit log query |

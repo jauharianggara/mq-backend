@@ -1,9 +1,7 @@
 pub mod admin;
 pub mod auth;
-pub mod cms;
 pub mod home;
 pub mod khatmil;
-pub mod learning;
 pub mod media;
 pub mod memorization;
 pub mod notifications;

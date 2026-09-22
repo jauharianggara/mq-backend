@@ -27,14 +27,12 @@ tags:
   - {name: auth, description: "Registrasi, login, token, verifikasi"}
   - {name: me, description: Profil & perangkat sendiri}
   - {name: quran, description: Data Al-Quran (read-only) + last-read/bookmark}
-  - {name: learning, description: Materi & progress membaca}
   - {name: memorization, description: Setoran hafalan & review ustadz}
   - {name: khatmil, description: Khatmil/khataman campaign}
   - {name: questions, description: Tanya ustadz + moderation}
   - {name: media, description: Upload object storage (presign 3-langkah)}
   - {name: notifications, description: Inbox notifikasi}
-  - {name: cms, description: Konten publik}
-  - {name: admin, description: Endpoint admin (users/cms/dashboard/settings/audit)}
+  - {name: admin, description: Endpoint admin (users/dashboard/settings/audit)}
 
 paths:
   /app/version:
@@ -448,39 +446,6 @@ paths:
       responses:
         "200": { description: OK }
 
-  # ---------------- LEARNING ----------------
-  /learning/materials:
-    get:
-      tags: [learning]
-      summary: Materi (published utk semua; admin lihat semua via status param)
-      parameters:
-        - {name: status, in: query, schema: {type: string, enum: [DRAFT, PUBLISHED, ARCHIVED]}}
-        - {name: tajwid_rule, in: query, schema: {type: string}}
-      responses:
-        "200": { description: OK }
-  /learning/materials/{id}:
-    get:
-      tags: [learning]
-      summary: Detail materi (markdown)
-      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
-      responses:
-        "200": { description: OK }
-        "404": { $ref: "#/components/responses/NotFound" }
-  /me/learning/{material_id}/progress:
-    put:
-      tags: [learning]
-      summary: Upsert progress baca materi
-      parameters: [{name: material_id, in: path, required: true, schema: {type: integer}}]
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                completed: {type: boolean}
-                last_position: {type: string}
-      responses:
-        "200": { description: OK }
 
   # ---------------- MEMORIZATION ----------------
   /memorization/submissions:
@@ -851,45 +816,6 @@ paths:
       responses:
         "200": { description: OK }
 
-  # ---------------- CMS (publik) ----------------
-  /cms/banners:
-    get:
-      tags: [cms]
-      summary: Banner aktif (posisi)
-      security: []
-      responses:
-        "200": { description: OK }
-  /cms/articles:
-    get:
-      tags: [cms]
-      summary: Artikel published
-      security: []
-      parameters: [{name: category, in: query, schema: {type: string}}, {name: limit, in: query, schema: {type: integer}}, {name: cursor, in: query, schema: {type: string}}]
-      responses:
-        "200": { description: OK }
-  /cms/articles/{slug}:
-    get:
-      tags: [cms]
-      summary: Detail artikel
-      security: []
-      parameters: [{name: slug, in: path, required: true, schema: {type: string}}]
-      responses:
-        "200": { description: OK }
-        "404": { $ref: "#/components/responses/NotFound" }
-  /cms/announcements:
-    get:
-      tags: [cms]
-      summary: Pengumuman aktif
-      security: []
-      responses:
-        "200": { description: OK }
-  /cms/faqs:
-    get:
-      tags: [cms]
-      summary: FAQ aktif
-      security: []
-      responses:
-        "200": { description: OK }
 
   # ---------------- ADMIN ----------------
   /admin/users:
@@ -918,63 +844,6 @@ paths:
                 status: {type: string, enum: [PENDING_VERIFICATION, ACTIVE, SUSPENDED, DEACTIVATED]}
                 add_role: {type: string}
                 remove_role: {type: string}
-      responses:
-        "200": { description: OK }
-  /admin/learning/materials:
-    post:
-      tags: [admin]
-      summary: CRUD materi (learning.manage) — POST create; PATCH/DELETE via /{id}
-      requestBody:
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/MaterialUpsert" }
-      responses:
-        "201": { $ref: "#/components/responses/Created" }
-  /admin/learning/materials/{id}:
-    patch:
-      tags: [admin]
-      summary: Update materi
-      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
-      requestBody:
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/MaterialUpsert" }
-      responses:
-        "200": { description: OK }
-    delete:
-      tags: [admin]
-      summary: Arsipkan materi (soft → ARCHIVED)
-      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
-      responses:
-        "200": { description: OK }
-  /admin/cms/{entity}:
-    parameters:
-      - {name: entity, in: path, required: true, schema: {type: string, enum: [articles, banners, announcements, faqs, article-categories]}}
-    post:
-      tags: [admin]
-      summary: Create entity CMS (cms.manage)
-      requestBody:
-        content:
-          application/json:
-            schema: {type: object}
-      responses:
-        "201": { $ref: "#/components/responses/Created" }
-  /admin/cms/{entity}/{id}:
-    parameters:
-      - {name: entity, in: path, required: true, schema: {type: string, enum: [articles, banners, announcements, faqs, article-categories]}}
-      - {name: id, in: path, required: true, schema: {type: integer}}
-    patch:
-      tags: [admin]
-      summary: Update entity CMS
-      requestBody:
-        content:
-          application/json:
-            schema: {type: object}
-      responses:
-        "200": { description: OK }
-    delete:
-      tags: [admin]
-      summary: Hapus entity CMS
       responses:
         "200": { description: OK }
   /admin/dashboard:
@@ -1156,13 +1025,3 @@ components:
         min_minutes_per_juz: {type: integer, minimum: 1, maximum: 600}
         require_manual_verification: {type: boolean}
         max_participants: {type: [integer, "null"]}
-        status: {type: string, enum: [DRAFT, SCHEDULED, ACTIVE, COMPLETED, CANCELLED]}
-    MaterialUpsert:
-      type: object
-      properties:
-        slug: {type: string}
-        title: {type: string}
-        tajwid_rule_code: {type: [string, "null"]}
-        content_md: {type: string}
-        cover_media_id: {type: [integer, "null"]}
-        status: {type: string, enum: [DRAFT, PUBLISHED, ARCHIVED]}
