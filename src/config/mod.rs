@@ -13,6 +13,9 @@ pub struct AppConfig {
 #[derive(Debug, Clone)]
 pub struct S3Config {
     pub endpoint: String,
+    /// Endpoint internal utk runtime ops (HEAD/GET range) — default = endpoint.
+    /// Presign SELALU pakai `endpoint` (host publik utk client device).
+    pub endpoint_internal: Option<String>,
     pub bucket: String,
     pub access_key: String,
     pub secret_key: String,
@@ -46,8 +49,9 @@ impl AppConfig {
             std::env::var("S3_SECRET_KEY").ok(),
         ) {
             (Some(endpoint), Some(bucket), Some(access_key), Some(secret_key)) => {
-                tracing::info!("S3 object storage aktif: {endpoint} bucket={bucket}");
-                Some(S3Config { endpoint, bucket, access_key, secret_key })
+                let endpoint_internal = std::env::var("S3_ENDPOINT_INTERNAL").ok();
+                tracing::info!("S3 object storage aktif: {endpoint} bucket={bucket} (internal: {})", endpoint_internal.as_deref().unwrap_or("= endpoint"));
+                Some(S3Config { endpoint, endpoint_internal, bucket, access_key, secret_key })
             }
             _ => {
                 tracing::warn!("S3_* belum lengkap (dev OK; WAJIB saat modul media 14)");
