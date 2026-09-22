@@ -141,3 +141,9 @@ cargo build --release --target x86_64-pc-windows-msvc
 taskkill /F /IM mq-backend.exe; sleep 2
 # start-mq-stack.bat akan restart semua
 ```
+
+## Media via tunnel (22Sep)
+- SeaweedFS S3 (port 9000) di-expose via tunnel **mq-media.jagodigital.online** (ingress + `originRequest.httpHostHeader: mq-media.jagodigital.online` — WAJIB; tanpa ini Host di-rewrite jadi localhost:9000 dan signature S3 403).
+- `.env` S3_ENDPOINT = `https://mq-media.jagodigital.online` — presign URL (foto profil + cover khatmil) HARUS host publik ini agar bisa di-fetch device/browser.
+- Cloudflare bot check menolak UA non-browser (python 1010); UA Dart/browser normal lolos — smoke harus set UA.
+- Backup config cloudflared: config.yml.bak-media.
