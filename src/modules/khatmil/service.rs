@@ -168,13 +168,17 @@ pub async fn update_campaign(pool: &MySqlPool, id: i64, req: CampaignUpsertReq) 
         }
     }
     let n = sqlx::query(
-        "UPDATE khatmil_campaigns SET name = ?, description = ?, cover_media_id = ?, mode = ?, status = ?, target_khataman = ?, group_count = ?, \
+        "UPDATE khatmil_campaigns SET name = ?, description = ?, cover_media_id = COALESCE(?, khatmil_campaigns.cover_media_id), mode = ?, status = ?, target_khataman = ?, group_count = ?, \
          period_start = ?, period_end = ?, min_minutes_per_juz = ?, require_manual_verification = ?, max_participants = ? WHERE id = ?")
         .bind(&req.name).bind(&req.description).bind(req.cover_media_id).bind(&req.mode).bind(&req.status).bind(req.target_khataman).bind(gc)
         .bind(parse_date(req.period_start.as_deref())?).bind(parse_date(req.period_end.as_deref())?)
         .bind(req.min_minutes_per_juz).bind(req.require_manual_verification).bind(req.max_participants).bind(id)
         .execute(pool).await.map_err(dberr)?.rows_affected();
     if n == 0 { return Err(AppError::NotFound("campaign tidak ada".into())); }
+    if req.remove_cover == Some(true) {
+        sqlx::query("UPDATE khatmil_campaigns SET cover_media_id = NULL WHERE id = ?")
+            .bind(id).execute(pool).await.map_err(dberr)?;
+    }
     if gc > cur_gc {
         // jumlah kelompok naik → pastikan baris kelompok baru tersedia (idempotent)
         crate::modules::khatmil::penugasan::ensure_groups(pool, id).await?;

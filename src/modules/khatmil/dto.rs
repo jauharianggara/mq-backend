@@ -10,6 +10,9 @@ pub struct CampaignUpsertReq {
     /// Cover campaign (media IMAGE READY — upload via modul media).
     #[serde(default)]
     pub cover_media_id: Option<i64>,
+    /// true = lepas cover (khusus PATCH; tanpa field = cover dipertahankan)
+    #[serde(default)]
+    pub remove_cover: Option<bool>,
     #[serde(default = "default_mode")]
     pub mode: String,
     #[serde(default = "default_target")]
