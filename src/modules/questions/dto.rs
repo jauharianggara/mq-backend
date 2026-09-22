@@ -54,6 +54,12 @@ pub struct QuestionThread {
     #[serde(flatten)]
     pub question: QuestionOut,
     pub messages: Vec<MessageOut>,
+    /// foto penanya — ikut kebijakan anonimitas asker_name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asker_photo_url: Option<String>,
+    /// foto ustadz penjawab (wajah publik utk ustadz)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ustadz_photo_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

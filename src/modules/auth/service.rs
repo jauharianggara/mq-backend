@@ -38,6 +38,7 @@ async fn user_public(pool: &MySqlPool, user_id: i64) -> Result<UserPublic, AppEr
         id: user_id, phone, email, account_type, status,
         roles: roles.into_iter().map(|r| r.0).collect(),
         full_name: full_name.and_then(|f| f.0),
+        photo_url: None,
     })
 }
 
@@ -258,6 +259,10 @@ pub async fn resend_verification(pool: &MySqlPool, dev_expose: bool, user_id: i6
     Ok(dev_expose.then_some(raw))
 }
 
-pub async fn get_me(pool: &MySqlPool, user_id: i64) -> Result<UserPublic, AppError> {
-    user_public(pool, user_id).await
+pub async fn get_me(state: &crate::state::AppState, user_id: i64) -> Result<UserPublic, AppError> {
+    let mut u = user_public(&state.pool, user_id).await?;
+    if let Some(url) = crate::modules::media::service::avatar_urls_for(state, &[user_id]).await.get(&user_id) {
+        u.photo_url = Some(url.clone());
+    }
+    Ok(u)
 }

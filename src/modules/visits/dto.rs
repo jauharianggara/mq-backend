@@ -17,6 +17,8 @@ pub struct NearbyUstadz {
     pub rating_avg: Option<f64>,
     pub rating_count: i64,
     pub price_per_hour: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub photo_url: Option<String>,
 }
 
 // ---------- slots ----------

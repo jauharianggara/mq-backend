@@ -173,10 +173,13 @@ async fn users_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Query
     let rows = qy.fetch_all(&st.pool).await.map_err(dberr)?;
     let has_more = rows.len() as i64 > limit;
     let next = if !srt.custom { rows.get(limit as usize).map(|r| r.0.to_string()) } else { None };
+    let avatars = crate::modules::media::service::avatar_urls_for(
+        &st, &rows.iter().take(limit as usize).map(|r| r.0).collect::<Vec<_>>()).await;
     let items: Vec<_> = rows.iter().take(limit as usize).map(|r| json!({
         "id": r.0, "email": r.1, "phone": r.2, "account_type": r.3, "status": r.4,
         "roles": r.5.as_deref().map(|s| s.split(',').collect::<Vec<_>>()), "last_login_at": r.6,
         "full_name": r.7, "city": r.8,
+        "photo_url": avatars.get(&r.0),
         "pendidikan_terakhir": r.9,
         "point": r.11.map(|lat| json!({
             "lat": lat,
@@ -236,10 +239,13 @@ async fn santri_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Quer
     let rows = qy.fetch_all(&st.pool).await.map_err(dberr)?;
     let has_more = rows.len() as i64 > limit;
     let next = if !srt.custom { rows.get(limit as usize).map(|r| r.0.to_string()) } else { None };
+    let avatars = crate::modules::media::service::avatar_urls_for(
+        &st, &rows.iter().take(limit as usize).map(|r| r.0).collect::<Vec<_>>()).await;
     let items: Vec<_> = rows.iter().take(limit as usize).map(|r| json!({
         "id": r.0, "full_name": r.1, "email": r.2, "phone": r.3, "city": r.4,
         "status": r.5, "last_login_at": r.6, "deposit": r.7,
         "khatmil_aktif": r.8, "kunjungan_selesai": r.9,
+        "photo_url": avatars.get(&r.0),
     })).collect();
     Ok(ok_paged(&items, next, has_more, StatusCode::OK))
 }
@@ -299,6 +305,8 @@ async fn ustadz_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Quer
     let rows = qy.fetch_all(&st.pool).await.map_err(dberr)?;
     let has_more = rows.len() as i64 > limit;
     let next = if !srt.custom { rows.get(limit as usize).map(|r| r.0.to_string()) } else { None };
+    let avatars = crate::modules::media::service::avatar_urls_for(
+        &st, &rows.iter().take(limit as usize).map(|r| r.0).collect::<Vec<_>>()).await;
     let items: Vec<_> = rows.iter().take(limit as usize).map(|r| json!({
         "id": r.0, "full_name": r.1, "email": r.2, "phone": r.3, "city": r.4,
         "status": r.5, "last_login_at": r.6,
@@ -306,6 +314,7 @@ async fn ustadz_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Quer
         "is_accepting": r.9.map(|v| v != 0), "price_per_hour": r.10,
         "rating_avg": r.11, "rating_count": r.12,
         "saldo_penghasilan": r.13, "kunjungan_selesai": r.14,
+        "photo_url": avatars.get(&r.0),
     })).collect();
     Ok(ok_paged(&items, next, has_more, StatusCode::OK))
 }

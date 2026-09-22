@@ -4,6 +4,8 @@ info:
   version: 1.0.0
   description: |
     Backend API MQ Mujayarotul Faqih — Pesantren Digital Platform.
+    Foto profil (avatar) & cover khatmil dikirim sebagai URL presigned (photo_url / cover_url,
+    TTL 15 menit, di-generate inline di endpoint terkait).
     Sumber kontrak: plan gabungan rev 11+ (Bagian I Task 2.1, Bagian III tabel A/B).
 
     **Konvensi:**

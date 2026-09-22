@@ -7,6 +7,9 @@ pub struct CampaignUpsertReq {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Cover campaign (media IMAGE READY — upload via modul media).
+    #[serde(default)]
+    pub cover_media_id: Option<i64>,
     #[serde(default = "default_mode")]
     pub mode: String,
     #[serde(default = "default_target")]
@@ -38,6 +41,8 @@ pub struct CampaignOut {
     pub slug: String,
     pub name: String,
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cover_url: Option<String>,
     pub max_participants: Option<i64>,
     pub mode: String,
     pub status: String,

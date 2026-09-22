@@ -55,13 +55,14 @@ fn pct(part: i64, total: i64) -> Option<f64> {
 // Campaign list / create / update (lifecycle guard rev 3.2)
 // =====================================================================
 
-pub async fn list_campaigns(pool: &MySqlPool, status: Option<String>) -> Result<Vec<CampaignOut>, AppError> {
-    let rows: Vec<(i64, String, String, Option<String>, Option<i64>, String, String, i64, i64, i64, i8, i64, i64, f64, Option<String>, Option<String>)> = sqlx::query_as(
+pub async fn list_campaigns(state: &crate::state::AppState, status: Option<String>) -> Result<Vec<CampaignOut>, AppError> {
+    let pool = &state.pool;
+    let rows: Vec<(i64, String, String, Option<String>, Option<i64>, String, String, i64, i64, i64, i8, i64, i64, f64, Option<String>, Option<i64>)> = sqlx::query_as(
         "SELECT c.id, c.slug, c.name, c.description, c.max_participants, c.mode, c.status, c.target_khataman, c.group_count, c.min_minutes_per_juz, c.require_manual_verification, \
          (SELECT COUNT(*) FROM khatmil_participants p WHERE p.campaign_id = c.id), \
          (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.campaign_id = c.id AND a.status = 'COMPLETED'), \
          CAST(IFNULL(ROUND(100.0 * (SELECT COUNT(*) FROM khatmil_juz_assignments a2 WHERE a2.campaign_id = c.id AND a2.status = 'COMPLETED') / 30, 1), 0) AS DOUBLE), \
-         DATE_FORMAT(c.period_start, '%Y-%m-%d'), DATE_FORMAT(c.period_end, '%Y-%m-%d') \
+         NULLIF(CONCAT_WS('|', DATE_FORMAT(c.period_start, '%Y-%m-%d'), DATE_FORMAT(c.period_end, '%Y-%m-%d')), ''), c.cover_media_id \
          FROM khatmil_campaigns c WHERE (? IS NULL OR c.status = ?) ORDER BY c.id DESC")
         .bind(status.as_deref()).bind(status.as_deref())
         .fetch_all(pool).await.map_err(dberr)?;
@@ -86,27 +87,46 @@ pub async fn list_campaigns(pool: &MySqlPool, status: Option<String>) -> Result<
                 group_no: g.1, member_count: g.2, completed_juz: g.3 });
         }
     }
-    Ok(rows.into_iter().map(|r| CampaignOut {
+    let covers: std::collections::HashMap<i64, String> = {
+        let mut m = std::collections::HashMap::new();
+        for r in rows.iter().filter(|r| r.15.is_some()) {
+            if let Some(u) = crate::modules::media::service::presign_media_url(state, r.15.unwrap()).await {
+                m.insert(r.0, u);
+            }
+        }
+        m
+    };
+    let split_period = |s: &Option<String>| -> (Option<String>, Option<String>) {
+        s.as_deref().map(|v| {
+            let mut it = v.splitn(2, '|');
+            (it.next().map(|x| x.to_string()), it.next().map(|x| x.to_string()))
+        }).unwrap_or((None, None))
+    };
+    Ok(rows.into_iter().map(|r| {
+        let (ps, pe) = split_period(&r.14);
+        CampaignOut {
         id: r.0, slug: r.1, name: r.2, description: r.3, max_participants: r.4, mode: r.5, status: r.6,
+        cover_url: covers.get(&r.0).cloned(),
         target_khataman: r.7, group_count: r.8, min_minutes_per_juz: r.9, require_manual_verification: r.10 != 0,
         participants: r.11, juz_completed: r.12, progress_pct: r.13,
-        period_start: r.14, period_end: r.15,
+        period_start: ps, period_end: pe,
         groups_progress: gprog.remove(&r.0).unwrap_or_default(),
-    }).collect())
+    }}).collect())
 }
 
 pub async fn create_campaign(pool: &MySqlPool, created_by: i64, req: CampaignUpsertReq) -> Result<i64, AppError> {
     validate_upsert(&req)?;
+    validate_cover(pool, req.cover_media_id).await?;
     let dup: Option<(i64,)> = sqlx::query_as("SELECT id FROM khatmil_campaigns WHERE slug = ?")
         .bind(&req.slug).fetch_optional(pool).await.map_err(dberr)?;
     if dup.is_some() {
         return Err(AppError::Conflict("slug sudah dipakai".into()));
     }
     let ins = sqlx::query(
-        "INSERT INTO khatmil_campaigns (slug, name, description, mode, status, target_khataman, group_count, \
+        "INSERT INTO khatmil_campaigns (slug, name, description, cover_media_id, mode, status, target_khataman, group_count, \
          period_start, period_end, min_minutes_per_juz, require_manual_verification, max_participants, created_by) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .bind(&req.slug).bind(&req.name).bind(&req.description)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .bind(&req.slug).bind(&req.name).bind(&req.description).bind(req.cover_media_id)
         .bind(&req.mode).bind(&req.status).bind(req.target_khataman)
         .bind(req.group_count.unwrap_or(1))
         .bind(parse_date(req.period_start.as_deref())?).bind(parse_date(req.period_end.as_deref())?)
@@ -127,6 +147,7 @@ fn transition_ok(from: &str, to: &str) -> bool {
 
 pub async fn update_campaign(pool: &MySqlPool, id: i64, req: CampaignUpsertReq) -> Result<(), AppError> {
     validate_upsert(&req)?;
+    validate_cover(pool, req.cover_media_id).await?;
     let cur: Option<(String, i64)> = sqlx::query_as("SELECT status, group_count FROM khatmil_campaigns WHERE id = ?")
         .bind(id).fetch_optional(pool).await.map_err(dberr)?;
     let (cur, cur_gc) = cur.ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
@@ -147,9 +168,9 @@ pub async fn update_campaign(pool: &MySqlPool, id: i64, req: CampaignUpsertReq) 
         }
     }
     let n = sqlx::query(
-        "UPDATE khatmil_campaigns SET name = ?, description = ?, mode = ?, status = ?, target_khataman = ?, group_count = ?, \
+        "UPDATE khatmil_campaigns SET name = ?, description = ?, cover_media_id = ?, mode = ?, status = ?, target_khataman = ?, group_count = ?, \
          period_start = ?, period_end = ?, min_minutes_per_juz = ?, require_manual_verification = ?, max_participants = ? WHERE id = ?")
-        .bind(&req.name).bind(&req.description).bind(&req.mode).bind(&req.status).bind(req.target_khataman).bind(gc)
+        .bind(&req.name).bind(&req.description).bind(req.cover_media_id).bind(&req.mode).bind(&req.status).bind(req.target_khataman).bind(gc)
         .bind(parse_date(req.period_start.as_deref())?).bind(parse_date(req.period_end.as_deref())?)
         .bind(req.min_minutes_per_juz).bind(req.require_manual_verification).bind(req.max_participants).bind(id)
         .execute(pool).await.map_err(dberr)?.rows_affected();
@@ -179,6 +200,19 @@ fn validate_upsert(req: &CampaignUpsertReq) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Cover campaign harus media IMAGE READY (owner bebas — diupload admin).
+async fn validate_cover(pool: &MySqlPool, cover: Option<i64>) -> Result<(), AppError> {
+    if let Some(mid) = cover {
+        let m: Option<(String, String)> = sqlx::query_as("SELECT kind, status FROM media WHERE id = ?")
+            .bind(mid).fetch_optional(pool).await.map_err(dberr)?;
+        match m {
+            Some((k, s)) if k == "IMAGE" && s == "READY" => {}
+            _ => return Err(AppError::Unprocessable("cover_media_id tidak valid (harus IMAGE READY)".into())),
+        }
+    }
+    Ok(())
+}
+
 fn parse_date(d: Option<&str>) -> Result<Option<chrono::NaiveDate>, AppError> {
     match d {
         None => Ok(None),
@@ -191,18 +225,27 @@ fn parse_date(d: Option<&str>) -> Result<Option<chrono::NaiveDate>, AppError> {
 // Detail campaign — peta juz v2: assignment TERBARU per juz (aktif ATAU COMPLETED terakhir)
 // =====================================================================
 
-pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail, AppError> {
-    let base: Option<(i64, String, String, Option<String>, Option<i64>, String, String, i64, i64, i64, i8, i64, i64, f64, Option<String>, Option<String>)> =
+pub async fn campaign_detail(state: &crate::state::AppState, id: i64) -> Result<CampaignDetail, AppError> {
+    let pool = &state.pool;
+    let base: Option<(i64, String, String, Option<String>, Option<i64>, String, String, i64, i64, i64, i8, i64, i64, f64, Option<String>, Option<i64>)> =
         sqlx::query_as(
             "SELECT c.id, c.slug, c.name, c.description, c.max_participants, c.mode, c.status, c.target_khataman, c.group_count, c.min_minutes_per_juz, c.require_manual_verification, \
              (SELECT COUNT(*) FROM khatmil_participants p WHERE p.campaign_id = c.id), \
              (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.campaign_id = c.id AND a.status = 'COMPLETED'), \
              CAST(IFNULL(ROUND(100.0 * (SELECT COUNT(*) FROM khatmil_juz_assignments a2 WHERE a2.campaign_id = c.id AND a2.status = 'COMPLETED') / 30, 1), 0) AS DOUBLE), \
-             DATE_FORMAT(c.period_start, '%Y-%m-%d'), DATE_FORMAT(c.period_end, '%Y-%m-%d') \
+             NULLIF(CONCAT_WS('|', DATE_FORMAT(c.period_start, '%Y-%m-%d'), DATE_FORMAT(c.period_end, '%Y-%m-%d')), ''), c.cover_media_id \
              FROM khatmil_campaigns c WHERE c.id = ?")
         .bind(id).fetch_optional(pool).await.map_err(dberr)?;
-    let (cid, slug, name, descr, maxp, mode, status, target, gc, minmin, rmv, participants, completed, _pct_base, ps, pe) = base
+    let (cid, slug, name, descr, maxp, mode, status, target, gc, minmin, rmv, participants, completed, _pct_base, period_join, cover_mid) = base
         .ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
+    let (ps, pe): (Option<String>, Option<String>) = period_join.as_deref().map(|v| {
+        let mut it = v.splitn(2, '|');
+        (it.next().map(|x| x.to_string()), it.next().map(|x| x.to_string()))
+    }).unwrap_or((None, None));
+    let cover_url = match cover_mid {
+        Some(mid) => crate::modules::media::service::presign_media_url(state, mid).await,
+        None => None,
+    };
     // peta 30 juz — assignment terbaru per juz apa pun statusnya (juz COMPLETED tetap terlihat)
     let rows: Vec<(i64, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>, Option<String>, i64, Option<i64>)> =
         sqlx::query_as(
@@ -286,7 +329,7 @@ pub async fn campaign_detail(pool: &MySqlPool, id: i64) -> Result<CampaignDetail
     Ok(CampaignDetail {
         campaign: CampaignOut {
             id: cid, slug, name, description: descr, max_participants: maxp, mode, status, target_khataman: target,
-            group_count: gc, min_minutes_per_juz: minmin, require_manual_verification: rmv != 0,
+            cover_url, group_count: gc, min_minutes_per_juz: minmin, require_manual_verification: rmv != 0,
             participants, juz_completed: completed, progress_pct: pctv.unwrap_or(0.0),
             period_start: ps.clone(), period_end: pe.clone(),
             groups_progress: Vec::new(),

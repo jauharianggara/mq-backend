@@ -73,6 +73,6 @@ pub async fn change_password(cu: CurrentUser, State(st): State<AppState>, Json(r
 }
 
 pub async fn me(cu: CurrentUser, State(st): State<AppState>) -> Result<axum::response::Response, AppError> {
-    let u = svc::get_me(&st.pool, cu.user_id).await?;
+    let u = svc::get_me(&st, cu.user_id).await?;
     Ok(ok(u, axum::http::StatusCode::OK))
 }

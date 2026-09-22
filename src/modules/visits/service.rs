@@ -333,13 +333,14 @@ pub async fn nearby(state: &AppState, lat: f64, lng: f64) -> Result<Vec<NearbyUs
     let radius = setting_i64(&state.pool, "visit_radius_km", 5).await.clamp(1, 50) as f64;
     let dlat = radius / 111.0;
     let dlng = radius / (111.0 * lat.to_radians().cos().max(0.2));
-    let rows: Vec<(i64, String, f64, f64, i64, Option<f64>, i64)> = sqlx::query_as(&format!(
+    let rows: Vec<(i64, String, f64, f64, i64, Option<f64>, i64, Option<i64>)> = sqlx::query_as(&format!(
         "SELECT u.id, COALESCE(NULLIF(upn.full_name,''),'Ustadz'), CAST(up.point_lat AS DOUBLE), CAST(up.point_lng AS DOUBLE), \
          vs.price_per_hour, \
          (SELECT CAST(AVG(vr.rating) AS DOUBLE) FROM visit_reviews vr WHERE vr.reviewee_id = u.id \
             AND vr.direction = 'SANTRI_TO_USTADZ' AND vr.revealed_at IS NOT NULL AND vr.hidden = 0), \
          (SELECT COUNT(*) FROM visit_reviews vr2 WHERE vr2.reviewee_id = u.id \
-            AND vr2.direction = 'SANTRI_TO_USTADZ' AND vr2.revealed_at IS NOT NULL AND vr2.hidden = 0) \
+            AND vr2.direction = 'SANTRI_TO_USTADZ' AND vr2.revealed_at IS NOT NULL AND vr2.hidden = 0), \
+         COALESCE(up.photo_media_id, upn.photo_media_id) \
          FROM users u \
          JOIN user_profiles upn ON upn.user_id = u.id \
          JOIN ustadz_profiles up ON up.user_id = u.id AND up.verified_at IS NOT NULL \
@@ -353,11 +354,14 @@ pub async fn nearby(state: &AppState, lat: f64, lng: f64) -> Result<Vec<NearbyUs
         .fetch_all(&state.pool)
         .await
         .map_err(dberr)?;
+    let avatars = crate::modules::media::service::avatar_urls_for(
+        state, &rows.iter().map(|r| r.0).collect::<Vec<_>>()).await;
     let mut out: Vec<NearbyUstadz> = rows.into_iter().map(|r| {
         let dist = haversine_km(lat, lng, r.2, r.3);
         NearbyUstadz {
             ustadz_id: r.0, full_name: r.1, distance_km: dist,
             rating_avg: r.5, rating_count: r.6, price_per_hour: r.4,
+            photo_url: avatars.get(&r.0).cloned(),
         }
     }).filter(|u| u.distance_km <= radius).collect();
     out.sort_by(|a, b| a.distance_km.partial_cmp(&b.distance_km).unwrap_or(std::cmp::Ordering::Equal));

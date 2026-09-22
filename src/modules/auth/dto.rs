@@ -31,6 +31,8 @@ pub struct UserPublic {
     pub status: String,
     pub roles: Vec<String>,
     pub full_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub photo_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

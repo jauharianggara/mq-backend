@@ -12,6 +12,8 @@ pub struct PatchMeReq {
     pub province: Option<String>,
     pub photo_media_id: Option<i64>,
     pub bio: Option<String>,
+    /// true = lepas foto (set photo_media_id NULL di kedua tabel profil)
+    pub remove_photo: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +65,8 @@ pub struct MyProfileOut {
     pub province: Option<String>,
     pub bio: Option<String>,
     pub photo_media_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub photo_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

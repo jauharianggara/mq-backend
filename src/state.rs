@@ -28,6 +28,8 @@ pub struct AppState {
     visit_chat_cache: Cache<i64, ()>,
     /// Bagian V: payment gateway (Xendit / mock saat secret kosong)
     pub payments: std::sync::Arc<crate::infrastructure::xendit::PaymentGateway>,
+    /// cache presign URL media by media_id (avatar/cover) — TTL 5 menit << expiry 15 menit
+    pub media_url_cache: Cache<i64, std::sync::Arc<String>>,
 }
 
 impl AppState {
@@ -74,6 +76,9 @@ impl AppState {
             payments: std::sync::Arc::new(crate::infrastructure::xendit::PaymentGateway::from_env()),
             cache_str: Cache::builder()
                 .time_to_live(std::time::Duration::from_secs(24 * 3600))
+                .build(),
+            media_url_cache: Cache::builder()
+                .time_to_live(std::time::Duration::from_secs(5 * 60))
                 .build(),
         }
     }

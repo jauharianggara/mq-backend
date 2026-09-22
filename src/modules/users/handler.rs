@@ -23,7 +23,7 @@ pub async fn patch_me(cu: CurrentUser, State(st): State<AppState>, Json(req): Js
 
 pub async fn my_profile(cu: CurrentUser, State(st): State<AppState>) -> Result<axum::response::Response, AppError> {
     cu.require_active()?;
-    let d = svc::my_profile(&st.pool, cu.user_id).await?;
+    let d = svc::my_profile(&st, cu.user_id).await?;
     Ok(ok(d, StatusCode::OK))
 }
 

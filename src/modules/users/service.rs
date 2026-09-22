@@ -25,6 +25,17 @@ pub async fn patch_me(pool: &MySqlPool, user_id: i64, req: PatchMeReq) -> Result
             return Err(AppError::Unprocessable("nomor HP tidak valid (8-15 digit)".into()));
         }
     }
+    // PDP: foto harus media IMAGE READY milik sendiri (fix: dulu bisa nautkan media orang lain)
+    if let Some(pid) = req.photo_media_id {
+        let m: Option<(String, String)> = sqlx::query_as(
+            "SELECT kind, status FROM media WHERE id = ? AND owner_id = ?")
+            .bind(pid).bind(user_id)
+            .fetch_optional(pool).await.map_err(dberr)?;
+        match m {
+            Some((k, s)) if k == "IMAGE" && s == "READY" => {}
+            _ => return Err(AppError::Unprocessable("photo_media_id tidak valid (harus foto milik sendiri yang selesai diupload)".into())),
+        }
+    }
     sqlx::query(
         "INSERT INTO user_profiles (user_id, full_name, gender, birth_date, address_text, city, province, photo_media_id, bio) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
@@ -33,7 +44,8 @@ pub async fn patch_me(pool: &MySqlPool, user_id: i64, req: PatchMeReq) -> Result
          city = COALESCE(new.city, user_profiles.city), province = COALESCE(new.province, user_profiles.province), \
          photo_media_id = COALESCE(new.photo_media_id, user_profiles.photo_media_id), bio = COALESCE(new.bio, user_profiles.bio)")
         .bind(user_id)
-        .bind(req.full_name).bind(req.gender)
+        .bind(req.full_name.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("Belum Diisi"))
+        .bind(req.gender)
         .bind(req.birth_date.as_deref().and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()))
         .bind(req.address_text).bind(req.city).bind(req.province)
         .bind(req.photo_media_id).bind(req.bio)
@@ -44,24 +56,38 @@ pub async fn patch_me(pool: &MySqlPool, user_id: i64, req: PatchMeReq) -> Result
             .bind(clean).bind(user_id)
             .execute(pool).await.map_err(dberr)?;
     }
+    // lepas foto (unlink kolom saja — object tetap di storage)
+    if req.remove_photo == Some(true) {
+        sqlx::query("UPDATE user_profiles SET photo_media_id = NULL WHERE user_id = ?")
+            .bind(user_id).execute(pool).await.map_err(dberr)?;
+        sqlx::query("UPDATE ustadz_profiles SET photo_media_id = NULL WHERE user_id = ?")
+            .bind(user_id).execute(pool).await.map_err(dberr)?;
+    }
     Ok(())
 }
 
 /// GET /me/profile — data diri lengkap pemilik akun (self only).
-pub async fn my_profile(pool: &MySqlPool, user_id: i64) -> Result<crate::modules::users::dto::MyProfileOut, AppError> {
+pub async fn my_profile(state: &crate::state::AppState, user_id: i64) -> Result<crate::modules::users::dto::MyProfileOut, AppError> {
+    let pool = &state.pool;
     let (phone, email): (Option<String>, Option<String>) = sqlx::query_as(
         "SELECT phone, email FROM users WHERE id = ?")
         .bind(user_id).fetch_one(pool).await.map_err(dberr)?;
     let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>)> =
         sqlx::query_as(
-            "SELECT full_name, gender, DATE_FORMAT(birth_date, '%Y-%m-%d'), address_text, city, province, bio, photo_media_id              FROM user_profiles WHERE user_id = ?")
+            "SELECT up.full_name, up.gender, DATE_FORMAT(up.birth_date, '%Y-%m-%d'), up.address_text, up.city, up.province, up.bio, \
+             COALESCE(ust.photo_media_id, up.photo_media_id) \
+             FROM user_profiles up LEFT JOIN ustadz_profiles ust ON ust.user_id = up.user_id WHERE up.user_id = ?")
             .bind(user_id).fetch_optional(pool).await.map_err(dberr)?;
     let r = row.unwrap_or_default();
+    let photo_url = match r.7 {
+        Some(mid) => crate::modules::media::service::presign_media_url(state, mid).await,
+        None => None,
+    };
     Ok(crate::modules::users::dto::MyProfileOut {
         phone, email,
         full_name: r.0, gender: r.1, birth_date: r.2,
         address_text: r.3, city: r.4, province: r.5,
-        bio: r.6, photo_media_id: r.7,
+        bio: r.6, photo_media_id: r.7, photo_url,
     })
 }
 

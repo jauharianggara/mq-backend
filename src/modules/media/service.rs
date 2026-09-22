@@ -202,3 +202,53 @@ pub async fn get_media(
         expires_at: (chrono::Utc::now() + chrono::Duration::seconds(PRESIGN_SECS as i64)).format("%Y-%m-%dT%H:%M:%SZ").to_string(),
     })
 }
+
+// =====================================================================
+// Helper presign-inline (avatar & cover) — dipakai lintas modul.
+// Cache moka 5 menit per media_id (<< expiry 15 menit), PDP aman:
+// URL hanya di-embed di endpoint yang konteksnya memang visible.
+// =====================================================================
+
+/// Presign URL media by id (status READY saja). None = storage off / tak ada / gagal.
+pub async fn presign_media_url(state: &crate::state::AppState, media_id: i64) -> Option<String> {
+    let storage = state.storage.as_ref()?;
+    if let Some(u) = state.media_url_cache.get(&media_id) {
+        return Some(u.to_string());
+    }
+    let key: Option<(String,)> = sqlx::query_as("SELECT storage_key FROM media WHERE id = ? AND status = 'READY'")
+        .bind(media_id).fetch_optional(&state.pool).await.ok().flatten();
+    let url = storage.presign_get(&key?.0, PRESIGN_SECS).await.ok()?;
+    state.media_url_cache.insert(media_id, std::sync::Arc::new(url.clone()));
+    Some(url)
+}
+
+/// Avatar URL batch: user_id -> presigned URL.
+/// Sumber = COALESCE(ustadz_profiles.photo_media_id, user_profiles.photo_media_id).
+pub async fn avatar_urls_for(
+    state: &crate::state::AppState,
+    user_ids: &[i64],
+) -> std::collections::HashMap<i64, String> {
+    let mut out = std::collections::HashMap::new();
+    if user_ids.is_empty() || state.storage.is_none() {
+        return out;
+    }
+    let placeholders = user_ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT u.id, COALESCE(ust.photo_media_id, up.photo_media_id) FROM users u \
+         LEFT JOIN ustadz_profiles ust ON ust.user_id = u.id \
+         LEFT JOIN user_profiles up ON up.user_id = u.id WHERE u.id IN ({placeholders})");
+    let mut q = sqlx::query_as::<_, (i64, Option<i64>)>(&sql);
+    for id in user_ids { q = q.bind(id); }
+    let rows: Vec<(i64, Option<i64>)> = match q.fetch_all(&state.pool).await {
+        Ok(r) => r,
+        Err(e) => { tracing::error!("avatar_urls_for: {e}"); return out; }
+    };
+    for (uid, mid) in rows {
+        if let Some(mid) = mid {
+            if let Some(u) = presign_media_url(state, mid).await {
+                out.insert(uid, u);
+            }
+        }
+    }
+    out
+}

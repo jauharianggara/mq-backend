@@ -40,7 +40,7 @@ pub async fn create(
     }
     // replay check dulu (pola memorization)
     if let Some(qid) = find_by_client_key(pool, user_id, &key).await? {
-        let t = thread(pool, None, qid, false, true).await?; // pemilik view
+        let t = thread(pool, None, qid, false, true, None).await?; // pemilik view
         return Ok((q_from_thread(pool, &t), false));
     }
     let cat: Option<(i64, String)> = sqlx::query_as(
@@ -93,7 +93,7 @@ pub async fn create(
         .bind(format!("{{\"category\":\"{cat_name}\",\"assigned\":{assigned}}}"))
         .execute(&mut *tx).await.map_err(dberr)?;
     tx.commit().await.map_err(dberr)?;
-    let t = thread(pool, None, qid, false, true).await?;
+    let t = thread(pool, None, qid, false, true, None).await?;
     Ok((q_from_thread(pool, &t), true))
 }
 
@@ -106,7 +106,7 @@ async fn find_by_client_key(pool: &MySqlPool, user_id: i64, key: &str) -> Result
 }
 
 fn q_from_thread(_pool: &MySqlPool, t: &QuestionThread) -> QuestionThread {
-    QuestionThread { question: t.question.clone(), messages: t.messages.clone() }
+    QuestionThread { question: t.question.clone(), messages: t.messages.clone(), asker_photo_url: None, ustadz_photo_url: None }
 }
 
 type QRow = (i64, i64, String, i8, i64, String, String, Option<String>, String, Option<i64>, String, Option<String>, Option<String>);
@@ -131,7 +131,7 @@ fn access(_pool: &MySqlPool, viewer: i64, can_moderate: bool, can_admin: bool, r
 
 pub async fn thread(
     pool: &MySqlPool, storage: Option<&Storage>, qid: i64,
-    can_moderate: bool, is_owner: bool,
+    can_moderate: bool, is_owner: bool, photo_state: Option<&crate::state::AppState>,
 ) -> Result<QuestionThread, AppError> {
     let row = fetch_q(pool, qid).await?;
     let msgs: Vec<(i64, i64, Option<String>, i8, String, Option<String>, Option<i64>, Option<i32>, String)> = sqlx::query_as(
@@ -159,6 +159,18 @@ pub async fn thread(
          WHERE qa.question_id = ? AND qa.status = 'ASSIGNED' ORDER BY qa.id DESC LIMIT 1")
         .bind(qid).fetch_optional(pool).await.map_err(dberr)?;
     let hide_asker = row.3 != 0 && !is_owner && !can_moderate;
+    let (asker_photo, ustadz_photo): (Option<String>, Option<String>) = match photo_state {
+        Some(state) => {
+            let mut ids = vec![row.1];
+            if let Some(uid) = row.9 { ids.push(uid); }
+            let av = crate::modules::media::service::avatar_urls_for(state, &ids).await;
+            (
+                if hide_asker { None } else { av.get(&row.1).cloned() },
+                row.9.and_then(|uid| av.get(&uid).cloned()),
+            )
+        }
+        None => (None, None),
+    };
     Ok(QuestionThread {
         question: QuestionOut {
             id: row.0,
@@ -169,6 +181,8 @@ pub async fn thread(
             created_at: row.10, answered_at: row.11, published_at: row.12,
         },
         messages: out_msgs,
+        asker_photo_url: asker_photo,
+        ustadz_photo_url: ustadz_photo,
     })
 }
 
@@ -188,7 +202,7 @@ pub async fn my_questions(pool: &MySqlPool, user_id: i64, cursor: Option<i64>, l
     let has_more = rows.len() > limit;
     let mut out = Vec::new();
     for qid in rows.iter().take(limit) {
-        let t = thread(pool, None, *qid, false, true).await?;
+        let t = thread(pool, None, *qid, false, true, None).await?;
         out.push(t.question);
     }
     let next = if has_more { out.last().map(|q| q.id.to_string()) } else { None };
@@ -206,7 +220,7 @@ pub async fn inbox(pool: &MySqlPool, ustadz_id: i64, cursor: Option<i64>, limit:
     let has_more = rows.len() > limit;
     let mut out = Vec::new();
     for qid in rows.iter().take(limit) {
-        let t = thread(pool, None, *qid, false, false).await?;
+        let t = thread(pool, None, *qid, false, false, None).await?;
         out.push(t.question);
     }
     let next = if has_more { out.last().map(|q| q.id.to_string()) } else { None };
@@ -229,7 +243,7 @@ pub async fn archive(pool: &MySqlPool, q: Option<String>, category: Option<Strin
     let has_more = rows.len() > limit;
     let mut out = Vec::new();
     for qid in rows.iter().take(limit) {
-        let t = thread(pool, None, *qid, false, false).await?;
+        let t = thread(pool, None, *qid, false, false, None).await?;
         out.push(t.question);
     }
     let next = if has_more { out.last().map(|q| q.id.to_string()) } else { None };
@@ -244,7 +258,7 @@ pub async fn moderation_queue(pool: &MySqlPool, status: Option<String>) -> Resul
         .fetch_all(pool).await.map_err(dberr)?;
     let mut out = Vec::new();
     for qid in rows {
-        let t = thread(pool, None, qid, true, false).await?;
+        let t = thread(pool, None, qid, true, false, None).await?;
         out.push(t.question);
     }
     Ok(out)
@@ -405,7 +419,7 @@ pub async fn reject_publish(pool: &MySqlPool, approver: i64, qid: i64, reason: O
     Ok(())
 }
 
-pub async fn detail(pool: &MySqlPool, storage: Option<&Storage>, viewer: i64, can_moderate: bool, can_admin: bool, qid: i64)
+pub async fn detail(pool: &MySqlPool, storage: Option<&Storage>, photo_state: Option<&crate::state::AppState>, viewer: i64, can_moderate: bool, can_admin: bool, qid: i64)
     -> Result<QuestionThread, AppError> {
     let row = fetch_q(pool, qid).await?;
     let allowed = access(pool, viewer, can_moderate, can_admin, &row);
@@ -414,5 +428,5 @@ pub async fn detail(pool: &MySqlPool, storage: Option<&Storage>, viewer: i64, ca
     }
     // PUBLISHED thread bisa dilihat siapa saja (arsip) — tapi pesan hanya utk peserta? Kontrak: arsip menampilkan Q&A.
     let is_owner = row.1 == viewer;
-    thread(pool, storage, qid, can_moderate, is_owner).await
+    thread(pool, storage, qid, can_moderate, is_owner, photo_state).await
 }

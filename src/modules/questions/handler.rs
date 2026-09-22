@@ -67,7 +67,7 @@ pub async fn detail(
         Some(c) => (c.user_id, c.permissions.contains("question.moderate"), c.permissions.contains("users.read")),
         None => (0i64, false, false), // arsip PUBLISHED via OptionalUser publik
     };
-    Ok(ok(svc::detail(&st.pool, st.storage.as_deref(), viewer, can_mod, can_admin, id).await?, StatusCode::OK))
+    Ok(ok(svc::detail(&st.pool, st.storage.as_deref(), Some(&st), viewer, can_mod, can_admin, id).await?, StatusCode::OK))
 }
 
 pub async fn send_message(
