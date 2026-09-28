@@ -151,7 +151,7 @@ async fn main() {
 
     // 1. Roles
     for (code, name, desc) in ROLES {
-        q(&pool, "INSERT INTO roles (code, name, description) VALUES (?, ?, ?) AS new \
+        q(&pool, "INSERT INTO roles (code, name, description) VALUES (?, ?, ?) \
                   ON DUPLICATE KEY UPDATE name = VALUES(name), description = VALUES(description)",
           &[code, name, desc]).await;
     }
@@ -159,7 +159,7 @@ async fn main() {
 
     // 2. Permissions
     for (module, code, desc) in PERMISSIONS {
-        q(&pool, "INSERT INTO permissions (module, code, description) VALUES (?, ?, ?) AS new \
+        q(&pool, "INSERT INTO permissions (module, code, description) VALUES (?, ?, ?) \
                   ON DUPLICATE KEY UPDATE module = VALUES(module), description = VALUES(description)",
           &[module, code, desc]).await;
     }
@@ -171,7 +171,7 @@ async fn main() {
         let role_id = one(&pool, "SELECT id FROM roles WHERE code = ?", role).await;
         for p in *perms {
             let pid = one(&pool, "SELECT id FROM permissions WHERE code = ?", p).await;
-            q(&pool, "INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?) AS new \
+            q(&pool, "INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?) \
                       ON DUPLICATE KEY UPDATE role_id = VALUES(role_id)",
               &[&role_id.to_string(), &pid.to_string()]).await;
             n_map += 1;
@@ -181,7 +181,7 @@ async fn main() {
 
     // 4. Kategori tanya
     for (i, (slug, name)) in CATEGORIES.iter().enumerate() {
-        q(&pool, "INSERT INTO question_categories (slug, name, sort_order) VALUES (?, ?, ?) AS new \
+        q(&pool, "INSERT INTO question_categories (slug, name, sort_order) VALUES (?, ?, ?) \
                   ON DUPLICATE KEY UPDATE name = VALUES(name), sort_order = VALUES(sort_order)",
           &[slug, name, &(i + 1).to_string()]).await;
     }
@@ -190,7 +190,7 @@ async fn main() {
     // 4b. Bagian V: jenis layanan kunjungan (id fix, idempotent)
     for (id, code, name, desc) in VISIT_SERVICE_TYPES {
         q(&pool, "INSERT INTO visit_service_types (id, code, name, description, sort_order) \
-                  VALUES (?, ?, ?, ?, ?) AS new \
+                  VALUES (?, ?, ?, ?, ?) \
                   ON DUPLICATE KEY UPDATE code = VALUES(code), name = VALUES(name), description = VALUES(description), sort_order = VALUES(sort_order)",
           &[&id.to_string(), code, name, desc, &id.to_string()]).await;
     }
@@ -198,7 +198,7 @@ async fn main() {
 
     // 4c. Bagian V: notif templates kunjungan
     for (code, title, body) in VISIT_TEMPLATES {
-        q(&pool, "INSERT INTO notification_templates (code, title_template, body_template) VALUES (?, ?, ?) AS new \
+        q(&pool, "INSERT INTO notification_templates (code, title_template, body_template) VALUES (?, ?, ?) \
                   ON DUPLICATE KEY UPDATE title_template = VALUES(title_template), body_template = VALUES(body_template)",
           &[code, title, body]).await;
     }
@@ -206,7 +206,7 @@ async fn main() {
 
     // 5. Settings default
     for (key, value, desc) in SETTINGS {
-        q(&pool, "INSERT INTO settings (`key`, value, description) VALUES (?, ?, ?) AS new \
+        q(&pool, "INSERT INTO settings (`key`, value, description) VALUES (?, ?, ?) \
                   ON DUPLICATE KEY UPDATE description = VALUES(description)",
           &[key, value, desc]).await;
     }
