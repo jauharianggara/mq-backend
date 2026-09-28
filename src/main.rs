@@ -50,8 +50,11 @@ async fn main() {
             }
         }
     }
-    let cors = CorsLayer::new()
-        .allow_origins(cors_origins)
+    let mut cors = CorsLayer::new();
+    for origin in cors_origins {
+        cors = cors.allow_origin(origin);
+    }
+    let cors = cors
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
