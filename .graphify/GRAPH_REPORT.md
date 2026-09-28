@@ -1,7 +1,7 @@
 # Graph Report - .  (2026-09-28)
 
 ## Corpus Check
-- 132 files · ~153,585 words
+- 132 files · ~153,804 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -14,12 +14,12 @@
 ## Input Scope
 - Requested: auto
 - Resolved: committed (source: default-auto)
-- Included files: 132 · Candidates: 454
-- Excluded: 66 untracked · 20612 ignored · 2 sensitive · 0 missing committed
+- Included files: 132 · Candidates: 521
+- Excluded: 8 untracked · 21465 ignored · 2 sensitive · 0 missing committed
 - Recommendation: Use --scope all or graphify.yaml inputs.corpus for a knowledge-base folder.
 
 ## Graph Freshness
-- Built from Git commit: `2a56d5a`
+- Built from Git commit: `15bc92b`
 - Compare this hash to `git rev-parse HEAD` before trusting freshness-sensitive graph output.
 ## God Nodes (most connected - your core abstractions)
 1. `ok()` - 39 edges
