@@ -26,10 +26,32 @@ async fn main() {
     tracing::info!("MQ backend starting on http://{addr}");
 
     // CORS ketat: hanya origin yang diizinkan (Phase 5.1)
+    // EXTRA_CORS_ORIGINS (comma-separated) menambah origin utk deploy baru tanpa recompile (prod synergy .116)
+    let mut cors_origins: Vec<axum::http::HeaderValue> = [
+        "https://mq-admin.jagodigital.online",
+        "http://localhost:3210",
+        "http://127.0.0.1:3210",
+    ]
+    .iter()
+    .filter_map(|o| o.parse::<axum::http::HeaderValue>().ok())
+    .collect();
+    if let Ok(extra) = std::env::var("EXTRA_CORS_ORIGINS") {
+        for origin in extra.split(',') {
+            let origin = origin.trim();
+            if origin.is_empty() {
+                continue;
+            }
+            match origin.parse::<axum::http::HeaderValue>() {
+                Ok(v) => {
+                    tracing::info!("CORS extra origin: {origin}");
+                    cors_origins.push(v);
+                }
+                Err(e) => tracing::warn!("CORS extra origin tidak valid '{origin}': {e}"),
+            }
+        }
+    }
     let cors = CorsLayer::new()
-        .allow_origin("https://mq-admin.jagodigital.online".parse::<axum::http::HeaderValue>().unwrap())
-        .allow_origin("http://localhost:3210".parse::<axum::http::HeaderValue>().unwrap())
-        .allow_origin("http://127.0.0.1:3210".parse::<axum::http::HeaderValue>().unwrap())
+        .allow_origins(cors_origins)
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
