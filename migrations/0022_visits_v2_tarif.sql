@@ -5,6 +5,39 @@
 -- terlanjur setengah-alter MAUPUN fresh deploy dari 0017 v1).
 -- =============================================================
 
+-- ---------- (patch fresh-install prod) skema v2 hasil alter manual W1 ----------
+-- duration_hours + buang active_marker/uv_active_uq + uv_client_uq + index v2
+-- (idempotent — no-op bila DB sudah v2; fresh prod dari 0017 butuh blok ini)
+SET @c := (SELECT COUNT(*) FROM information_schema.statistics
+           WHERE table_schema=DATABASE() AND table_name='ustadz_visits' AND index_name='uv_active_uq');
+SET @sql := IF(@c>0, 'ALTER TABLE ustadz_visits DROP INDEX uv_active_uq', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @c := (SELECT COUNT(*) FROM information_schema.columns
+           WHERE table_schema=DATABASE() AND table_name='ustadz_visits' AND column_name='active_marker');
+SET @sql := IF(@c>0, 'ALTER TABLE ustadz_visits DROP COLUMN active_marker', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @c := (SELECT COUNT(*) FROM information_schema.columns
+           WHERE table_schema=DATABASE() AND table_name='ustadz_visits' AND column_name='duration_hours');
+SET @sql := IF(@c=0, 'ALTER TABLE ustadz_visits ADD COLUMN duration_hours TINYINT NOT NULL DEFAULT 1 AFTER scheduled_at', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @c := (SELECT COUNT(*) FROM information_schema.statistics
+           WHERE table_schema=DATABASE() AND table_name='ustadz_visits' AND index_name='uv_client_uq');
+SET @sql := IF(@c=0, 'ALTER TABLE ustadz_visits ADD UNIQUE KEY uv_client_uq (client_key, user_id)', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @c := (SELECT COUNT(*) FROM information_schema.statistics
+           WHERE table_schema=DATABASE() AND table_name='ustadz_visits' AND index_name='uv_ustadz_sched_idx');
+SET @sql := IF(@c>0, 'ALTER TABLE ustadz_visits DROP INDEX uv_ustadz_sched_idx', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @c := (SELECT COUNT(*) FROM information_schema.statistics
+           WHERE table_schema=DATABASE() AND table_name='ustadz_visits' AND index_name='uv_sched_idx' AND column_name='status');
+SET @sql := IF(@c=0, 'ALTER TABLE ustadz_visits DROP INDEX uv_sched_idx, ADD KEY uv_sched_idx (scheduled_at, status)', 'SELECT 1');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
 -- ---------- helper guard: ADD / DROP kolom hanya bila perlu ----------
 SET @c := (SELECT COUNT(*) FROM information_schema.columns
            WHERE table_schema=DATABASE() AND table_name='ustadz_visits' AND column_name='price_per_hour');
