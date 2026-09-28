@@ -20,6 +20,6 @@ CREATE TABLE admin_wallet_adjustments (
 ) ENGINE=InnoDB;
 
 INSERT IGNORE INTO settings (`key`, value, description) VALUES
-  ('payout_fee_amount', CAST(6500 AS JSON), 'Biaya penarikan dana ustadz (Rp)'),
-  ('payout_min_amount', CAST(50000 AS JSON), 'Minimum penarikan dana ustadz (Rp)'),
-  ('visit_max_hours', CAST(8 AS JSON), 'Durasi maksimal kunjungan (jam)');
+  ('payout_fee_amount', '6500', 'Biaya penarikan dana ustadz (Rp)'),
+  ('payout_min_amount', '50000', 'Minimum penarikan dana ustadz (Rp)'),
+  ('visit_max_hours', '8', 'Durasi maksimal kunjungan (jam)');

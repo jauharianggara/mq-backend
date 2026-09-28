@@ -115,8 +115,8 @@ CREATE TABLE IF NOT EXISTS ustadz_blackout_dates (
 
 -- ---------- settings v2 (INSERT IGNORE = no-op bila sudah ada) ----------
 INSERT IGNORE INTO settings (`key`, value, description) VALUES
-  ('visit_min_schedule_hours', CAST(2 AS JSON), 'Jadwal minimal berapa jam ke depan'),
-  ('visit_max_schedule_days',  CAST(14 AS JSON), 'Jadwal maksimal berapa hari ke depan'),
-  ('visit_invoice_duration_sec', CAST(7200 AS JSON), 'Masa hidup invoice (hold slot) detik'),
-  ('visit_cancel_free_hours', CAST(2 AS JSON), 'Pembatalan gratis sampai N jam sebelum jadwal'),
-  ('visit_minor_booking_policy', CAST('"BLOCK"' AS JSON), 'Kebijakan booking usia < 18 th');
+  ('visit_min_schedule_hours', '2', 'Jadwal minimal berapa jam ke depan'),
+  ('visit_max_schedule_days',  '14', 'Jadwal maksimal berapa hari ke depan'),
+  ('visit_invoice_duration_sec', '7200', 'Masa hidup invoice (hold slot) detik'),
+  ('visit_cancel_free_hours', '2', 'Pembatalan gratis sampai N jam sebelum jadwal'),
+  ('visit_minor_booking_policy', '"BLOCK"', 'Kebijakan booking usia < 18 th');
