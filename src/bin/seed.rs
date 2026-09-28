@@ -187,14 +187,7 @@ async fn main() {
     }
     println!("kategori: {} upsert", CATEGORIES.len());
 
-    // 4b. Bagian V: jenis layanan kunjungan (id fix, idempotent)
-    for (id, code, name, desc) in VISIT_SERVICE_TYPES {
-        q(&pool, "INSERT INTO visit_service_types (id, code, name, description, sort_order) \
-                  VALUES (?, ?, ?, ?, ?) \
-                  ON DUPLICATE KEY UPDATE code = VALUES(code), name = VALUES(name), description = VALUES(description), sort_order = VALUES(sort_order)",
-          &[&id.to_string(), code, name, desc, &id.to_string()]).await;
-    }
-    println!("visit_service_types: {} upsert", VISIT_SERVICE_TYPES.len());
+    // 4b. visit_service_types: DIHAPUS skema v2 (0022 drop tabel; tarif via ustadz_visit_settings.price_per_hour)
 
     // 4c. Bagian V: notif templates kunjungan
     for (code, title, body) in VISIT_TEMPLATES {
@@ -254,7 +247,6 @@ async fn main() {
         ("role_permissions", "SELECT COUNT(*) FROM role_permissions"),
         ("kategori", "SELECT COUNT(*) FROM question_categories"),
         ("settings", "SELECT COUNT(*) FROM settings"),
-        ("visit_types", "SELECT COUNT(*) FROM visit_service_types"),
         ("notif_templates", "SELECT COUNT(*) FROM notification_templates"),
     ] {
         let n: i64 = sqlx::query_scalar(sqlq).fetch_one(&pool).await.unwrap();
