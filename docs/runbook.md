@@ -147,3 +147,15 @@ taskkill /F /IM mq-backend.exe; sleep 2
 - `.env` S3_ENDPOINT = `https://mq-media.jagodigital.online` — presign URL (foto profil + cover khatmil) HARUS host publik ini agar bisa di-fetch device/browser.
 - Cloudflare bot check menolak UA non-browser (python 1010); UA Dart/browser normal lolos — smoke harus set UA.
 - Backup config cloudflared: config.yml.bak-media.
+
+## PROD — server synergy .116 (2 Okt 2026)
+Domain: **api.mq.synergyinfinity.id** (BE :8321) · **admin.mq.synergyinfinity.id** (Next standalone pm2 `mq-admin` :3210) · **media.mq.synergyinfinity.id** (SeaweedFS S3 :9000, path-style, `force_path_style`). Cert LE SAN-3-domain via acme.sh (webroot /www/wwwroot/mq-challenge; auto-renew + reloadcmd nginx reload). DNS wildcard *.mq → 103.167.113.116 (PowerDNS di server).
+
+- **Build**: on-server — clone ke /root/mq-build/mq-backend → `cargo build --release -j 2` (rustup ada; `-j 2` demi RAM multi-tenant). Binary → /opt/mq/.
+- **Services**: systemd `mq-backend.service`, `mq-worker.service` (EnvironmentFile /etc/mq/mq-backend.env, chmod 600), `seaweed.service` (weed server 9333/8080/8888/9000; **JANGAN pakai -volume.max=0** di 4.47-linux — 0 = benar2 nol volume, upload 500 "No writable volumes"). Data storage: /www/wwwroot/mq-media-data.
+- **Admin**: build di server (npm ci + `npm run build`, Next standalone) → deploy /www/wwwroot/mq-admin → pm2 `mq-admin` (env inline: PORT=3210 HOSTNAME=127.0.0.1 NODE_ENV=production **API_BASE_URL=https://api.mq.synergyinfinity.id**; .env.production di-ignore git). GOTCHA: daemon pm2 v6 TIDAK meneruskan env ecosystem file → start ulang dengan env inline + `--cwd`.
+- **DB**: MariaDB 10.11 `mq_prod` (user mq_app@127.0.0.1). Migrasi via bin `dbmigrate` dari /root/mq-deploy (butuh folder ./migrations di CWD). Kompatibilitas MySQL8→MariaDB sudah dipatch di file (DROP CHECK→DROP CONSTRAINT, CAST AS JSON→literal, 0006b no-op, 0022 patch v1→v2 fresh-install, seed VALUES(col)+tanpa visit_service_types).
+- **Update BE/worker**: git pull di /root/mq-build → cargo build → cp ke /opt/mq → `systemctl restart mq-backend mq-worker` → curl healthz.
+- **Update admin**: git pull /root/mq-build/mq-admin → npm ci + npm run build → rsync .next/standalone + .next/static + public ke /www/wwwroot/mq-admin → `pm2 restart mq-admin`.
+- **CORS**: EXTRA_CORS_ORIGINS di /etc/mq/mq-backend.env (tanpa recompile).
+- **Known**: HTTP:80 IP-publik ditangani edge hosting — host tak terdaftar dibalas 444 (semua vhost manual baru kena; 443 normal). Akses selalu https.
