@@ -364,7 +364,7 @@ pub async fn join(pool: &MySqlPool, user_id: i64, campaign_id: i64) -> Result<()
         .bind(campaign_id).bind(user_id)
         .execute(pool).await.map_err(dberr)?;
     sqlx::query("INSERT INTO activity_events (user_id, event_type, ref_type, ref_id, payload) \
-                 VALUES (?, 'khatmil.joined', 'khatmil_campaign', ?, CAST('{}' AS JSON))")
+                 VALUES (?, 'khatmil.joined', 'khatmil_campaign', ?, '{}')")
         .bind(user_id).bind(campaign_id.to_string())
         .execute(pool).await.map_err(dberr)?;
     Ok(())
@@ -551,14 +551,14 @@ pub async fn post_progress(
         sqlx::query("UPDATE khatmil_progress SET verified_at = UTC_TIMESTAMP() WHERE assignment_id = ? AND verified_at IS NULL")
             .bind(aid).execute(&mut *tx).await.map_err(dberr)?;
         sqlx::query("INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
-                     VALUES (?, 'KHOTMIL_JUZ_DONE', 'Juz selesai', ?, CAST(? AS JSON), 'IN_APP')")
+                     VALUES (?, 'KHOTMIL_JUZ_DONE', 'Juz selesai', ?, ?, 'IN_APP')")
             .bind(user_id)
             .bind(format!("Juz {juz} di campaign {cname} selesai — terverifikasi sistem (posisi mencapai ayat terakhir)"))
             .bind(format!("{{\"deeplink\":\"khatmil:assignment:{aid}\",\"juz\":{juz}}}"))
             .execute(&mut *tx).await.map_err(dberr)?;
     }
     sqlx::query("INSERT INTO activity_events (user_id, event_type, ref_type, ref_id, payload) \
-                 VALUES (?, 'khatmil.progress', 'khatmil_assignment', ?, CAST(? AS JSON))")
+                 VALUES (?, 'khatmil.progress', 'khatmil_assignment', ?, ?)")
         .bind(user_id).bind(aid.to_string())
         .bind(format!("{{\"juz\":{juz},\"surah\":{surah},\"ayah\":{ayah},\"read_ayat\":{off},\"juz_total_ayat\":{total},\"completed\":{completed}}}"))
         .execute(&mut *tx).await.map_err(dberr)?;
@@ -755,7 +755,7 @@ pub async fn job_stale_reminder(pool: &MySqlPool) -> Result<u64, AppError> {
             .fetch_one(pool).await.map_err(dberr)?;
         if recent.0 > 0 { continue; }
         sqlx::query("INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
-                     VALUES (?, 'KHATMIL_JUZ_STALE', 'Pengingat Juz', ?, CAST(? AS JSON), 'IN_APP')")
+                     VALUES (?, 'KHATMIL_JUZ_STALE', 'Pengingat Juz', ?, ?, 'IN_APP')")
             .bind(uid)
             .bind(format!("Juz {juz} di campaign {cname} belum selesai — yuk lanjutkan bacaannya"))
             .bind(format!("{{\"deeplink\":\"khatmil:assignment:{aid}\",\"assignment_id\":{aid},\"juz\":{juz}}}"))

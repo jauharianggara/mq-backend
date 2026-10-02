@@ -79,7 +79,7 @@ pub async fn propose_adjustment(
         "INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
          VALUES (?, 'SALDO_ADJUST_REQUEST', 'Penyesuaian saldo dari admin', \
          'Admin mengajukan penyesuaian saldo Anda. Buka halaman Deposit untuk menyetujui/menolak.', \
-         CAST('{\"deeplink\":\"wallet\"}' AS JSON), 'IN_APP')")
+         '{\"deeplink\":\"wallet\"}', 'IN_APP')")
         .bind(user_id)
         .execute(pool).await;
     Ok(adj_id)
@@ -160,7 +160,7 @@ async fn notify_adjustment_result(pool: &MySqlPool, adj_id: i64, admin_id: Optio
         .bind(user_id).fetch_one(pool).await.unwrap_or_else(|_| "(tanpa nama)".into());
     let _ = sqlx::query(
         "INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
-         VALUES (?, 'SALDO_ADJUST_RESULT', ?, ?, CAST('{\"deeplink\":\"wallet-adjustments\"}' AS JSON), 'IN_APP')")
+         VALUES (?, 'SALDO_ADJUST_RESULT', ?, ?, '{\"deeplink\":\"wallet-adjustments\"}', 'IN_APP')")
         .bind(admin_id)
         .bind(if accepted { "Penyesuaian saldo disetujui" } else { "Penyesuaian saldo ditolak" })
         .bind(format!(

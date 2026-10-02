@@ -50,7 +50,7 @@ async fn ensure_cleanup_job(pool: &MySqlPool) {
     // pengecualian sadar dari aturan ODKU — bukan jalur data-integrity).
     let _ = sqlx::query(
         "INSERT IGNORE INTO scheduled_jobs (job_type, payload, status, run_at, dedupe_key) \
-         VALUES ('media.cleanup_orphan', CAST('{}' AS JSON), 'PENDING', \
+         VALUES ('media.cleanup_orphan', '{}', 'PENDING', \
                  DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 HOUR), \
                  CONCAT('media-cleanup-', DATE_FORMAT(UTC_TIMESTAMP(), '%Y%m%d%H')))")
         .execute(pool).await;
@@ -68,7 +68,7 @@ async fn ensure_visit_jobs(pool: &MySqlPool) {
         let _ = sqlx::query(
             &format!(
                 "INSERT IGNORE INTO scheduled_jobs (job_type, payload, status, run_at, dedupe_key) \
-                 VALUES ('{job_type}', CAST('{{}}' AS JSON), 'PENDING', \
+                 VALUES ('{job_type}', '{{}}', 'PENDING', \
                          DATE_ADD(UTC_TIMESTAMP(), INTERVAL {every}), \
                          CONCAT('{job_type}-', {dedupe}))"
             ))
@@ -80,7 +80,7 @@ async fn ensure_visit_jobs(pool: &MySqlPool) {
 async fn ensure_khatmil_job(pool: &MySqlPool) {
     let _ = sqlx::query(
         "INSERT IGNORE INTO scheduled_jobs (job_type, payload, status, run_at, dedupe_key) \
-         VALUES ('khatmil.stale_reminder', CAST('{}' AS JSON), 'PENDING', \
+         VALUES ('khatmil.stale_reminder', '{}', 'PENDING', \
                  TIMESTAMP(DATE(UTC_TIMESTAMP() + INTERVAL 1 DAY), '01:00:00'), \
                  CONCAT('khatmil-stale-', DATE_FORMAT(UTC_TIMESTAMP(), '%Y%m%d')))")
         .execute(pool).await;

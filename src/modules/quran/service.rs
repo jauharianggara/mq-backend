@@ -82,7 +82,7 @@ pub async fn put_last_read(pool: &MySqlPool, user_id: i64, ayah_id: i64) -> Resu
     // Learning journey (keputusan #6) — client debounce; server catat ringan
     sqlx::query(
         "INSERT INTO activity_events (user_id, event_type, ref_type, ref_id, payload) \
-         VALUES (?, 'reading.last_read', 'quran_ayah', ?, CAST(? AS JSON))")
+         VALUES (?, 'reading.last_read', 'quran_ayah', ?, ?)")
         .bind(user_id).bind(ayah_id.to_string())
         .bind(format!("{{\"surah_id\":{surah_id},\"ayah_id\":{ayah_id}}}"))
         .execute(pool).await.map_err(dberr)?;

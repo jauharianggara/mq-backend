@@ -103,13 +103,13 @@ async fn settings_list(cu: CurrentUser, State(st): State<AppState>) -> Result<Re
 async fn settings_put(cu: CurrentUser, State(st): State<AppState>, Path(key): Path<String>, Json(body): Json<serde_json::Value>) -> Result<Response, AppError> {
     cu.require("settings.manage")?;
     let raw = body.to_string();
-    let n = sqlx::query("INSERT INTO settings (`key`, value, updated_by) VALUES (?, CAST(? AS JSON), ?) AS new \
-                         ON DUPLICATE KEY UPDATE value = CAST(? AS JSON), updated_by = new.updated_by, updated_at = CURRENT_TIMESTAMP")
+    let n = sqlx::query("INSERT INTO settings (`key`, value, updated_by) VALUES (?, ?, ?) AS new \
+                         ON DUPLICATE KEY UPDATE value = ?, updated_by = new.updated_by, updated_at = CURRENT_TIMESTAMP")
         .bind(&key).bind(&raw).bind(cu.user_id).bind(&raw)
         .execute(&st.pool).await.map_err(dberr)?;
     let _ = n;
     let _ = sqlx::query("INSERT INTO audit_logs (actor_id, action, module, entity_type, entity_id, new_value) \
-                         VALUES (?, 'UPDATE', 'settings', 'settings', ?, CAST(? AS JSON))")
+                         VALUES (?, 'UPDATE', 'settings', 'settings', ?, ?)")
         .bind(cu.user_id).bind(&key).bind(&raw).execute(&st.pool).await;
     Ok(ok(json!({ "updated": true, "key": key }), StatusCode::OK))
 }
@@ -338,7 +338,7 @@ async fn users_patch(cu: CurrentUser, State(st): State<AppState>, Path(id): Path
             .bind(id).bind(role).execute(&st.pool).await.map_err(dberr)?;
     }
     let _ = sqlx::query("INSERT INTO audit_logs (actor_id, action, module, entity_type, entity_id, new_value) \
-                         VALUES (?, 'UPDATE', 'users', 'users', ?, CAST(? AS JSON))")
+                         VALUES (?, 'UPDATE', 'users', 'users', ?, ?)")
         .bind(cu.user_id).bind(id.to_string()).bind(body.to_string())
         .execute(&st.pool).await;
     Ok(ok(json!({ "updated": true }), StatusCode::OK))

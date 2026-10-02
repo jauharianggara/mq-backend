@@ -80,7 +80,7 @@ pub async fn create(
             .execute(&mut *tx).await.map_err(dberr)?;
         transition(&mut *tx, qid, Some("QUEUED"), "ASSIGNED", None, Some("auto least-load")).await?;
         sqlx::query("INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
-                     VALUES (?, 'QUESTION_NEW', 'Pertanyaan baru', ?, CAST(? AS JSON), 'IN_APP')")
+                     VALUES (?, 'QUESTION_NEW', 'Pertanyaan baru', ?, ?, 'IN_APP')")
             .bind(uid)
             .bind(format!("Pertanyaan kategori {cat_name}: {}", req.title.trim()))
             .bind(format!("{{\"deeplink\":\"question:{qid}\"}}"))
@@ -88,7 +88,7 @@ pub async fn create(
         assigned = true;
     }
     sqlx::query("INSERT INTO activity_events (user_id, event_type, ref_type, ref_id, payload) \
-                 VALUES (?, 'question.asked', 'question', ?, CAST(? AS JSON))")
+                 VALUES (?, 'question.asked', 'question', ?, ?)")
         .bind(user_id).bind(qid.to_string())
         .bind(format!("{{\"category\":\"{cat_name}\",\"assigned\":{assigned}}}"))
         .execute(&mut *tx).await.map_err(dberr)?;
@@ -359,7 +359,7 @@ pub async fn answer(pool: &MySqlPool, ustadz: i64, qid: i64) -> Result<(), AppEr
     transition(pool, qid, Some(&row.8), "ANSWERED", Some(ustadz), None).await?;
     // notif penanya
     sqlx::query("INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
-                 VALUES (?, 'QUESTION_ANSWERED', 'Pertanyaan dijawab', 'Pertanyaan Anda telah dijawab ustadz', CAST(? AS JSON), 'IN_APP')")
+                 VALUES (?, 'QUESTION_ANSWERED', 'Pertanyaan dijawab', 'Pertanyaan Anda telah dijawab ustadz', ?, 'IN_APP')")
         .bind(row.1).bind(format!("{{\"deeplink\":\"question:{qid}\"}}"))
         .execute(pool).await.map_err(dberr)?;
     Ok(())
@@ -396,7 +396,7 @@ pub async fn publish(pool: &MySqlPool, approver: i64, qid: i64) -> Result<(), Ap
     for uid in [row.1, row.9.unwrap_or(0)] {
         if uid == 0 { continue; }
         sqlx::query("INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
-                     VALUES (?, 'QUESTION_PUBLISHED', 'Jawaban dipublikasikan', 'Jawaban tanya ustadz kini tampil di arsip publik', CAST(? AS JSON), 'IN_APP')")
+                     VALUES (?, 'QUESTION_PUBLISHED', 'Jawaban dipublikasikan', 'Jawaban tanya ustadz kini tampil di arsip publik', ?, 'IN_APP')")
             .bind(uid).bind(format!("{{\"deeplink\":\"question:{qid}\"}}"))
             .execute(pool).await.map_err(dberr)?;
     }
@@ -412,7 +412,7 @@ pub async fn reject_publish(pool: &MySqlPool, approver: i64, qid: i64, reason: O
         .bind(qid).execute(pool).await.map_err(dberr)?;
     transition(pool, qid, Some("PUBLISH_REQUESTED"), "REJECTED", Some(approver), reason.as_deref()).await?;
     sqlx::query("INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
-                 VALUES (?, 'QUESTION_PUBLISH_REJECTED', 'Publikasi ditolak', ?, CAST(? AS JSON), 'IN_APP')")
+                 VALUES (?, 'QUESTION_PUBLISH_REJECTED', 'Publikasi ditolak', ?, ?, 'IN_APP')")
         .bind(row.1).bind(reason.clone().unwrap_or_else(|| "Jawaban tidak dipublikasikan".into()))
         .bind(format!("{{\"deeplink\":\"question:{qid}\"}}"))
         .execute(pool).await.map_err(dberr)?;

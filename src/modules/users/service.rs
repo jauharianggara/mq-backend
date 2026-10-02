@@ -106,7 +106,7 @@ pub async fn delete_me(pool: &MySqlPool, user_id: i64) -> Result<(), AppError> {
         .bind(user_id).execute(&mut *tx).await.map_err(dberr)?;
     sqlx::query("UPDATE user_devices SET is_active = 0 WHERE user_id = ?")
         .bind(user_id).execute(&mut *tx).await.map_err(dberr)?;
-    sqlx::query("INSERT INTO activity_events (user_id, event_type, payload) VALUES (?, 'auth.account_deleted', CAST('{}' AS JSON))")
+    sqlx::query("INSERT INTO activity_events (user_id, event_type, payload) VALUES (?, 'auth.account_deleted', '{}')")
         .bind(user_id).execute(&mut *tx).await.map_err(dberr)?;
     tx.commit().await.map_err(dberr)?;
     Ok(())

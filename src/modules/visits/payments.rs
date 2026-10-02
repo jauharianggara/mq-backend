@@ -102,7 +102,7 @@ fn mock_url(external_id: &str) -> Option<String> {
 pub async fn mark_visit_paid_by_deposit(state: &AppState, visit_id: i64) -> Result<(), AppError> {
     sqlx::query(
         "UPDATE payments SET status = 'PAID', paid_at = UTC_TIMESTAMP(), channel = 'DEPOSIT', \
-         raw_callback = CAST('{}' AS JSON) \
+         raw_callback = '{}' \
          WHERE subject_type = 'ustadz_visit' AND subject_id = ? AND status = 'PENDING'")
         .bind(visit_id)
         .execute(&state.pool)
@@ -127,7 +127,7 @@ pub async fn mark_visit_paid_by_deposit(state: &AppState, visit_id: i64) -> Resu
 pub async fn apply_visit_paid(state: &AppState, external_id: &str, invoice_id: Option<&str>, channel: Option<&str>, raw: &str) -> Result<String, AppError> {
     let n = sqlx::query(
         "UPDATE payments SET status = 'PAID', paid_at = UTC_TIMESTAMP(), channel = COALESCE(?, channel), \
-         raw_callback = CAST(? AS JSON) \
+         raw_callback = ? \
          WHERE (external_id = ? OR (? IS NOT NULL AND xendit_invoice_id = ?)) AND status = 'PENDING'")
         .bind(channel).bind(raw).bind(external_id).bind(invoice_id).bind(invoice_id)
         .execute(&state.pool).await.map_err(dberr)?.rows_affected();
@@ -169,7 +169,7 @@ pub async fn apply_visit_paid(state: &AppState, external_id: &str, invoice_id: O
 
 pub async fn apply_visit_expired(state: &AppState, external_id: &str, invoice_id: Option<&str>, raw: &str) -> Result<String, AppError> {
     let n = sqlx::query(
-        "UPDATE payments SET status = 'EXPIRED', raw_callback = CAST(? AS JSON) \
+        "UPDATE payments SET status = 'EXPIRED', raw_callback = ? \
          WHERE (external_id = ? OR (? IS NOT NULL AND xendit_invoice_id = ?)) AND status = 'PENDING'")
         .bind(raw).bind(external_id).bind(invoice_id).bind(invoice_id)
         .execute(&state.pool).await.map_err(dberr)?.rows_affected();
@@ -540,7 +540,7 @@ pub async fn create_topup_invoice(state: &AppState, user_id: i64, amount: i64) -
 
 pub async fn apply_topup_paid(state: &AppState, external_id: &str, channel: Option<&str>, raw: &str) -> Result<String, AppError> {
     let n = sqlx::query(
-        "UPDATE payments SET status = 'PAID', paid_at = UTC_TIMESTAMP(), channel = COALESCE(?, channel),          raw_callback = CAST(? AS JSON)          WHERE external_id = ? AND status = 'PENDING' AND subject_type = 'wallet_topup'")
+        "UPDATE payments SET status = 'PAID', paid_at = UTC_TIMESTAMP(), channel = COALESCE(?, channel),          raw_callback = ?          WHERE external_id = ? AND status = 'PENDING' AND subject_type = 'wallet_topup'")
         .bind(channel).bind(raw).bind(external_id)
         .execute(&state.pool).await.map_err(dberr)?.rows_affected();
     if n == 0 { return Ok("topup(no-op)".into()); }

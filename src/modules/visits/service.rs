@@ -55,7 +55,7 @@ where
     let data = format!("{{\"deeplink\":\"visit:{deeplink}\"}}");
     sqlx::query(
         "INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
-         VALUES (?, ?, ?, ?, CAST(? AS JSON), 'IN_APP')")
+         VALUES (?, ?, ?, ?, ?, 'IN_APP')")
         .bind(user_id).bind(code).bind(title).bind(body).bind(data)
         .execute(ex).await.map_err(dberr)?;
     Ok(())

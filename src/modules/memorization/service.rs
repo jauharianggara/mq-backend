@@ -87,7 +87,7 @@ pub async fn submit(
         .bind(user_id).bind(client_key.as_deref())
         .fetch_one(pool).await.map_err(dberr)?;
     sqlx::query("INSERT INTO activity_events (user_id, event_type, ref_type, ref_id, payload) \
-                 VALUES (?, 'memorization.submitted', 'memorization_submission', ?, CAST(? AS JSON))")
+                 VALUES (?, 'memorization.submitted', 'memorization_submission', ?, ?)")
         .bind(user_id).bind(row.0.to_string())
         .bind(format!("{{\"surah_id\":{},\"ayah_start\":{},\"ayah_end\":{}}}", req.surah_id, req.ayah_start, req.ayah_end))
         .execute(pool).await.map_err(dberr)?;
@@ -240,14 +240,14 @@ pub async fn review(
                     .execute(&mut *tx).await.map_err(dberr)?;
             }
             sqlx::query("INSERT INTO activity_events (user_id, event_type, ref_type, ref_id, payload) \
-                         VALUES (?, 'memorization.reviewed', 'memorization_submission', ?, CAST(? AS JSON))")
+                         VALUES (?, 'memorization.reviewed', 'memorization_submission', ?, ?)")
                 .bind(santri_id).bind(submission_id.to_string())
                 .bind(format!("{{\"verdict\":\"{verdict}\",\"ustadz_id\":{ustadz_id}}}"))
                 .execute(&mut *tx).await.map_err(dberr)?;
             // notif in-app santri (modul 10 tinggal fan-out/push)
             sqlx::query(
                 "INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
-                 VALUES (?, 'SETORAN_REVIEWED', 'Setoran hafalan diperiksa', ?, CAST(? AS JSON), 'IN_APP')")
+                 VALUES (?, 'SETORAN_REVIEWED', 'Setoran hafalan diperiksa', ?, ?, 'IN_APP')")
                 .bind(santri_id)
                 .bind(format!("Setoran surah telah diperiksa ustadz: {verdict}"))
                 .bind(format!("{{\"deeplink\":\"submission:{submission_id}\",\"verdict\":\"{verdict}\"}}"))

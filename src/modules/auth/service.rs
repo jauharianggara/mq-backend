@@ -83,7 +83,7 @@ pub async fn register(pool: &MySqlPool, dev_expose: bool, req: RegisterReq) -> R
         .bind(uid).execute(pool).await.map_err(dberr)?;
 
     // consent -> activity_events (keputusan #12 PDP)
-    sqlx::query("INSERT INTO activity_events (user_id, event_type, ref_type, ref_id, payload) VALUES (?, 'auth.registered', 'user', ?, CAST('{\"consent\":true,\"terms\":1}' AS JSON))")
+    sqlx::query("INSERT INTO activity_events (user_id, event_type, ref_type, ref_id, payload) VALUES (?, 'auth.registered', 'user', ?, '{\"consent\":true,\"terms\":1}')")
         .bind(uid).bind(uid.to_string()).execute(pool).await.map_err(dberr)?;
 
     // token verifikasi email (resend invalidates prior)
@@ -128,7 +128,7 @@ pub async fn verify_email(pool: &MySqlPool, token: &str) -> Result<(), AppError>
     // policy: registration_require_verification (default true) -> langsung ACTIVE setelah verifikasi
     sqlx::query("UPDATE users SET email_verified_at = UTC_TIMESTAMP(), status = 'ACTIVE' WHERE id = ? AND status = 'PENDING_VERIFICATION'")
         .bind(uid).execute(pool).await.map_err(dberr)?;
-    sqlx::query("INSERT INTO activity_events (user_id, event_type, payload) VALUES (?, 'auth.email_verified', CAST('{}' AS JSON))")
+    sqlx::query("INSERT INTO activity_events (user_id, event_type, payload) VALUES (?, 'auth.email_verified', '{}')")
         .bind(uid).execute(pool).await.map_err(dberr)?;
     Ok(())
 }

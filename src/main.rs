@@ -113,7 +113,7 @@ async fn audit_mw(
         tokio::spawn(async move {
             let _ = sqlx::query(
                 "INSERT INTO audit_logs (action, module, entity_type, entity_id, new_value) \
-                 VALUES (?, ?, 'http_request', ?, CAST(? AS JSON))")
+                 VALUES (?, ?, 'http_request', ?, ?)")
                 .bind(&action).bind(&module).bind(&path)
                 .bind(format!("{{\"status\":{status}}}"))
                 .execute(&pool).await;
