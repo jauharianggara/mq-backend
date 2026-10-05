@@ -206,9 +206,9 @@ def db_write(chapters, uthmani, imlaei, trans, pages, juzs, words=None):
             rev = "MAKKAH" if c["revelation_place"] == "makkah" else "MADINAH"
             cur.execute(
                 "INSERT INTO quran_surahs (id, name_arabic, name_latin, name_id, ayah_count, revelation) "
-                "VALUES (%s,%s,%s,%s,%s,%s) AS new ON DUPLICATE KEY UPDATE "
-                "name_arabic=new.name_arabic, name_latin=new.name_latin, name_id=new.name_id, "
-                "ayah_count=new.ayah_count, revelation=new.revelation",
+                "VALUES (%s,%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
+                "name_arabic=VALUES(name_arabic), name_latin=VALUES(name_latin), name_id=VALUES(name_id), "
+                "ayah_count=VALUES(ayah_count), revelation=VALUES(revelation)",
                 (c["id"], c["name_arabic"], c["name_simple"],
                  c.get("translated_name", {}).get("name", c["name_simple"]),
                  c["verses_count"], rev))
@@ -229,9 +229,9 @@ def db_write(chapters, uthmani, imlaei, trans, pages, juzs, words=None):
             juz_starts.append((s0, a0))
             cur.execute(
                 "INSERT INTO quran_juzs (id, start_surah_id, start_ayah, end_surah_id, end_ayah) "
-                "VALUES (%s,%s,%s,%s,%s) AS new ON DUPLICATE KEY UPDATE "
-                "start_surah_id=new.start_surah_id, start_ayah=new.start_ayah, "
-                "end_surah_id=new.end_surah_id, end_ayah=new.end_ayah",
+                "VALUES (%s,%s,%s,%s,%s) ON DUPLICATE KEY UPDATE "
+                "start_surah_id=VALUES(start_surah_id), start_ayah=VALUES(start_ayah), "
+                "end_surah_id=VALUES(end_surah_id), end_ayah=VALUES(end_ayah)",
                 (j["juz_number"], s0, a0, s1, a1))
         print("quran_juzs OK (30)")
 
@@ -242,9 +242,9 @@ def db_write(chapters, uthmani, imlaei, trans, pages, juzs, words=None):
             s, a = (int(x) for x in key.split(":"))
             cur.execute(
                 "INSERT INTO quran_ayahs (surah_id, ayah_number, text_uthmani, text_imlaei, juz, page) "
-                "VALUES (%s,%s,%s,%s,%s,%s) AS new "
-                "ON DUPLICATE KEY UPDATE text_uthmani=new.text_uthmani, text_imlaei=new.text_imlaei, "
-                "juz=new.juz, page=new.page",
+                "VALUES (%s,%s,%s,%s,%s,%s) "
+                "ON DUPLICATE KEY UPDATE text_uthmani=VALUES(text_uthmani), text_imlaei=VALUES(text_imlaei), "
+                "juz=VALUES(juz), page=VALUES(page)",
                 (s, a, v["text_uthmani"], iml.get(key), derive_juz_of(s, a, juz_starts), pages[key]))
         print("quran_ayahs OK (6236)")
 

@@ -74,8 +74,10 @@ pub async fn list_campaigns(state: &crate::state::AppState, status: Option<Strin
         let sql = format!(
             "SELECT g.campaign_id, g.group_no, \
              (SELECT COUNT(*) FROM khatmil_juz_assignments a WHERE a.group_id = g.id AND a.active_marker IS NOT NULL), \
-             (SELECT COUNT(*) FROM (SELECT MAX(a2.id) AS mid FROM khatmil_juz_assignments a2 WHERE a2.group_id = g.id GROUP BY a2.juz) m \
-               JOIN khatmil_juz_assignments a3 ON a3.id = m.mid WHERE a3.status = 'COMPLETED') \
+             (SELECT COUNT(*) FROM khatmil_juz_assignments a3 \
+              WHERE a3.group_id = g.id AND a3.status = 'COMPLETED' \
+                AND a3.id = (SELECT MAX(a2.id) FROM khatmil_juz_assignments a2 \
+                             WHERE a2.group_id = a3.group_id AND a2.juz = a3.juz)) \
              FROM khatmil_groups g \
              WHERE g.campaign_id IN ({placeholders}) AND g.group_no <= (SELECT c2.group_count FROM khatmil_campaigns c2 WHERE c2.id = g.campaign_id) \
              ORDER BY g.campaign_id, g.group_no");
