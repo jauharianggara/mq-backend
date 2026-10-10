@@ -11,13 +11,12 @@ use crate::state::AppState;
 pub async fn create_payment_pending(state: &AppState, visit_id: i64, amount: i64) -> Result<(i64, String), AppError> {
     let external_id = format!("visit-{visit_id}-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let duration = setting_i64(&state.pool, "visit_invoice_duration_sec", 7200).await;
-    let expires: String = sqlx::query_scalar(
-        &format!("SELECT DATE_FORMAT(DATE_ADD(UTC_TIMESTAMP(), INTERVAL {duration} SECOND), '%Y-%m-%dT%H:%i:%sZ')"))
-        .fetch_one(&state.pool).await.map_err(dberr)?;
+    // expires_at dihitung DALAM SQL (jangan bind string ISO-Z — MySQL 8.0.19+ menerima
+    // 'T'/'Z' tapi MariaDB 10.11 menolak 1292 Incorrect datetime value).
     let ins = sqlx::query(
-        "INSERT INTO payments (provider, external_id, amount, subject_type, subject_id, status, expires_at) \
-         VALUES ('xendit', ?, ?, 'ustadz_visit', ?, 'PENDING', ?)")
-        .bind(&external_id).bind(amount).bind(visit_id).bind(&expires)
+        &format!("INSERT INTO payments (provider, external_id, amount, subject_type, subject_id, status, expires_at) \
+         VALUES ('xendit', ?, ?, 'ustadz_visit', ?, 'PENDING', DATE_ADD(UTC_TIMESTAMP(), INTERVAL {duration} SECOND))"))
+        .bind(&external_id).bind(amount).bind(visit_id)
         .execute(&state.pool).await.map_err(dberr)?;
     Ok((ins.last_insert_id() as i64, external_id))
 }
