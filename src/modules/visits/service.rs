@@ -845,8 +845,8 @@ pub async fn put_my_location(state: &AppState, user_id: i64, lat: f64, lng: f64,
         return Err(AppError::RateLimited);
     }
     sqlx::query(
-        "INSERT INTO user_locations (user_id, lat, lng, accuracy_m, recorded_at) VALUES (?, ?, ?, ?, UTC_TIMESTAMP()) AS new \
-         ON DUPLICATE KEY UPDATE lat = new.lat, lng = new.lng, accuracy_m = new.accuracy_m, recorded_at = UTC_TIMESTAMP()")
+        "INSERT INTO user_locations (user_id, lat, lng, accuracy_m, recorded_at) VALUES (?, ?, ?, ?, UTC_TIMESTAMP()) \
+         ON DUPLICATE KEY UPDATE lat = VALUES(lat), lng = VALUES(lng), accuracy_m = VALUES(accuracy_m), recorded_at = UTC_TIMESTAMP()")
         .bind(user_id).bind(lat).bind(lng).bind(acc)
         .execute(&state.pool).await.map_err(dberr)?;
     Ok(())
@@ -873,8 +873,8 @@ pub async fn put_visit_settings(pool: &MySqlPool, ustadz_id: i64, req: VisitSett
     }
     sqlx::query(
         "INSERT INTO ustadz_visit_settings (ustadz_id, is_accepting, max_active_visits, price_per_hour) \
-         VALUES (?, ?, ?, ?) AS new \
-         ON DUPLICATE KEY UPDATE is_accepting = new.is_accepting, max_active_visits = new.max_active_visits, price_per_hour = new.price_per_hour")
+         VALUES (?, ?, ?, ?) \
+         ON DUPLICATE KEY UPDATE is_accepting = VALUES(is_accepting), max_active_visits = VALUES(max_active_visits), price_per_hour = VALUES(price_per_hour)")
         .bind(ustadz_id).bind(req.is_accepting as i8).bind(req.max_active_visits).bind(req.price_per_hour)
         .execute(pool).await.map_err(dberr)?;
     Ok(VisitSettingsOut { is_accepting: req.is_accepting, max_active_visits: req.max_active_visits, price_per_hour: req.price_per_hour })

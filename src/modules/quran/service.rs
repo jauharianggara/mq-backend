@@ -96,8 +96,8 @@ pub async fn add_bookmark(pool: &MySqlPool, user_id: i64, ayah_id: i64, note: Op
     let (_, surah_id, ayah_number, page) =
         exists.ok_or_else(|| AppError::Unprocessable("ayah_id tidak valid".into()))?;
     sqlx::query(
-        "INSERT INTO bookmarks (user_id, ayah_id, note) VALUES (?, ?, ?) AS new \
-         ON DUPLICATE KEY UPDATE note = new.note")
+        "INSERT INTO bookmarks (user_id, ayah_id, note) VALUES (?, ?, ?) \
+         ON DUPLICATE KEY UPDATE note = VALUES(note)")
         .bind(user_id).bind(ayah_id).bind(&note)
         .execute(pool).await.map_err(dberr)?;
     let id: (i64,) = sqlx::query_as("SELECT id FROM bookmarks WHERE user_id = ? AND ayah_id = ?")

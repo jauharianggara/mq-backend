@@ -539,10 +539,10 @@ pub async fn post_progress(
     } else { "SELF_REPORTED" };
     sqlx::query(
         "INSERT INTO khatmil_progress (assignment_id, pages_read, minutes_read, verification, current_surah_id, current_ayah) \
-         VALUES (?, ?, ?, ?, ?, ?) AS new \
-         ON DUPLICATE KEY UPDATE pages_read = GREATEST(new.pages_read, khatmil_progress.pages_read), \
-         minutes_read = GREATEST(new.minutes_read, khatmil_progress.minutes_read), \
-         verification = new.verification, current_surah_id = new.current_surah_id, current_ayah = new.current_ayah")
+         VALUES (?, ?, ?, ?, ?, ?) \
+         ON DUPLICATE KEY UPDATE pages_read = GREATEST(VALUES(pages_read), khatmil_progress.pages_read), \
+         minutes_read = GREATEST(VALUES(minutes_read), khatmil_progress.minutes_read), \
+         verification = VALUES(verification), current_surah_id = VALUES(current_surah_id), current_ayah = VALUES(current_ayah)")
         .bind(aid).bind(pages).bind(minutes).bind(verification).bind(surah).bind(ayah)
         .execute(&mut *tx).await.map_err(dberr)?;
     sqlx::query("UPDATE khatmil_juz_assignments SET status = ? WHERE id = ?")

@@ -216,8 +216,8 @@ pub async fn review(
             };
             let ins = sqlx::query(
                 "INSERT INTO memorization_reviews (submission_id, reviewer_id, verdict, notes, reply_audio_media_id) \
-                 VALUES (?, ?, ?, ?, ?) AS new \
-                 ON DUPLICATE KEY UPDATE verdict = new.verdict, notes = new.notes, reply_audio_media_id = new.reply_audio_media_id")
+                 VALUES (?, ?, ?, ?, ?) \
+                 ON DUPLICATE KEY UPDATE verdict = VALUES(verdict), notes = VALUES(notes), reply_audio_media_id = VALUES(reply_audio_media_id)")
                 .bind(submission_id).bind(ustadz_id).bind(&verdict).bind(&req.notes).bind(reply_media)
                 .execute(&mut *tx).await.map_err(dberr)?;
             if ins.rows_affected() == 0 && false { unreachable!() }
@@ -234,8 +234,8 @@ pub async fn review(
                     .bind(santri_id).bind(surah).fetch_one(&mut *tx).await.map_err(dberr)?;
                 sqlx::query(
                     "INSERT INTO memorization_progress (user_id, surah_id, last_passed_ayah, passed_count) \
-                     VALUES (?, ?, ?, ?) AS new \
-                     ON DUPLICATE KEY UPDATE last_passed_ayah = GREATEST(new.last_passed_ayah, memorization_progress.last_passed_ayah), passed_count = new.passed_count")
+                     VALUES (?, ?, ?, ?) \
+                     ON DUPLICATE KEY UPDATE last_passed_ayah = GREATEST(VALUES(last_passed_ayah), memorization_progress.last_passed_ayah), passed_count = VALUES(passed_count)")
                     .bind(santri_id).bind(surah).bind(end).bind(passed_count)
                     .execute(&mut *tx).await.map_err(dberr)?;
             }

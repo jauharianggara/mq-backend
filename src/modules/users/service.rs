@@ -38,11 +38,11 @@ pub async fn patch_me(pool: &MySqlPool, user_id: i64, req: PatchMeReq) -> Result
     }
     sqlx::query(
         "INSERT INTO user_profiles (user_id, full_name, gender, birth_date, address_text, city, province, photo_media_id, bio) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) AS new \
-         ON DUPLICATE KEY UPDATE full_name = COALESCE(new.full_name, user_profiles.full_name), gender = COALESCE(new.gender, user_profiles.gender), \
-         birth_date = COALESCE(new.birth_date, user_profiles.birth_date), address_text = COALESCE(new.address_text, user_profiles.address_text), \
-         city = COALESCE(new.city, user_profiles.city), province = COALESCE(new.province, user_profiles.province), \
-         photo_media_id = COALESCE(new.photo_media_id, user_profiles.photo_media_id), bio = COALESCE(new.bio, user_profiles.bio)")
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON DUPLICATE KEY UPDATE full_name = COALESCE(VALUES(full_name), user_profiles.full_name), gender = COALESCE(VALUES(gender), user_profiles.gender), \
+         birth_date = COALESCE(VALUES(birth_date), user_profiles.birth_date), address_text = COALESCE(VALUES(address_text), user_profiles.address_text), \
+         city = COALESCE(VALUES(city), user_profiles.city), province = COALESCE(VALUES(province), user_profiles.province), \
+         photo_media_id = COALESCE(VALUES(photo_media_id), user_profiles.photo_media_id), bio = COALESCE(VALUES(bio), user_profiles.bio)")
         .bind(user_id)
         .bind(req.full_name.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("Belum Diisi"))
         .bind(req.gender)
@@ -137,9 +137,9 @@ pub async fn register_device(
     }
     sqlx::query(
         "INSERT INTO user_devices (user_id, platform, push_token, device_name, app_version, app_id, is_active, last_seen_at) \
-         VALUES (?, ?, ?, ?, ?, ?, 1, UTC_TIMESTAMP()) AS new \
-         ON DUPLICATE KEY UPDATE device_name = new.device_name, app_version = new.app_version, \
-         app_id = new.app_id, is_active = 1, last_seen_at = UTC_TIMESTAMP(), platform = new.platform")
+         VALUES (?, ?, ?, ?, ?, ?, 1, UTC_TIMESTAMP()) \
+         ON DUPLICATE KEY UPDATE device_name = VALUES(device_name), app_version = VALUES(app_version), \
+         app_id = VALUES(app_id), is_active = 1, last_seen_at = UTC_TIMESTAMP(), platform = VALUES(platform)")
         .bind(user_id).bind(&req.platform).bind(&req.push_token)
         .bind(req.device_name).bind(req.app_version).bind(&req.app_id)
         .execute(pool).await.map_err(dberr)?;

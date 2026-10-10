@@ -103,8 +103,8 @@ async fn settings_list(cu: CurrentUser, State(st): State<AppState>) -> Result<Re
 async fn settings_put(cu: CurrentUser, State(st): State<AppState>, Path(key): Path<String>, Json(body): Json<serde_json::Value>) -> Result<Response, AppError> {
     cu.require("settings.manage")?;
     let raw = body.to_string();
-    let n = sqlx::query("INSERT INTO settings (`key`, value, updated_by) VALUES (?, ?, ?) AS new \
-                         ON DUPLICATE KEY UPDATE value = ?, updated_by = new.updated_by, updated_at = CURRENT_TIMESTAMP")
+    let n = sqlx::query("INSERT INTO settings (`key`, value, updated_by) VALUES (?, ?, ?) \
+                         ON DUPLICATE KEY UPDATE value = ?, updated_by = VALUES(updated_by), updated_at = CURRENT_TIMESTAMP")
         .bind(&key).bind(&raw).bind(cu.user_id).bind(&raw)
         .execute(&st.pool).await.map_err(dberr)?;
     let _ = n;
