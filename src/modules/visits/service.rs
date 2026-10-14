@@ -374,6 +374,7 @@ pub async fn slots_for_date(
     ustadz_id: i64,
     date: &str,
     hours: i64,
+    schedule_rules: bool,
 ) -> Result<(Vec<String>, Vec<(String, i64)>), AppError> {
     let d = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
         .map_err(|_| AppError::Unprocessable("date YYYY-MM-DD".into()))?;
@@ -397,7 +398,12 @@ pub async fn slots_for_date(
     let now_utc: chrono::NaiveDateTime = sqlx::query_scalar("SELECT UTC_TIMESTAMP()")
         .fetch_one(pool).await.map_err(dberr)?;
     let min_h = setting_i64(pool, "visit_min_schedule_hours", 2).await;
-    let earliest_utc = now_utc + chrono::Duration::hours(min_h);
+    // mode testing (schedule_rules=false): abaikan jarak minimal — jam hari ini langsung terbuka
+    let earliest_utc = if schedule_rules {
+        now_utc + chrono::Duration::hours(min_h)
+    } else {
+        now_utc - chrono::Duration::hours(1)
+    };
     let max_h_setting = setting_i64(pool, "visit_max_hours", 8).await;
 
     let mut out = Vec::new();
@@ -478,7 +484,7 @@ pub async fn create_visit(
         .map_err(|_| AppError::Unprocessable("tanggal/jam tidak valid".into()))?;
     let sched_utc = sched_wib - chrono::Duration::hours(7);
     let hhmm = format!("{:02}:{:02}", sched_wib.hour(), sched_wib.minute());
-    let (avail, _max_hours_chk) = slots_for_date(&state.pool, req.ustadz_id, &req.date, req.duration_hours).await?;
+    let (avail, _max_hours_chk) = slots_for_date(&state.pool, req.ustadz_id, &req.date, req.duration_hours, state.visit_schedule_rules()).await?;
     if !avail.contains(&hhmm) {
         return Err(AppError::Unprocessable(format!("jam {hhmm} tidak tersedia — pilih jam dari daftar")));
     }
@@ -669,8 +675,8 @@ pub async fn messages_send(
     body: &str,
 ) -> Result<MessageOut, AppError> {
     let v = require_visit_access(&state.pool, user, visit_id).await?;
-    if v.status != "CONFIRMED" {
-        return Err(AppError::Forbidden("chat aktif hanya saat kunjungan dikonfirmasi".into()));
+    if !matches!(v.status.as_str(), "CONFIRMED" | "IN_PROGRESS") {
+        return Err(AppError::Forbidden("chat aktif hanya saat kunjungan dikonfirmasi/berlangsung".into()));
     }
     if !state.visit_chat_gate(&user.user_id) {
         return Err(AppError::RateLimited);
@@ -979,7 +985,9 @@ pub async fn decline_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64,
     Ok(visit_out(&state.pool, &v2, Some(ustadz_user_id)).await?)
 }
 
-pub async fn complete_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64) -> Result<VisitOut, AppError> {
+/// Mulai kunjungan (CONFIRMED -> IN_PROGRESS) — dipanggil ustadz saat tiba/mulai layaknya "check-in".
+/// Jendela (aturan normal): H-30 menit s.d. jadwal+durasi+24 jam. Mode testing (kill-switch env): kapan saja.
+pub async fn start_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64) -> Result<VisitOut, AppError> {
     let v = fetch_visit(&state.pool, visit_id).await?.ok_or_else(|| AppError::NotFound("pesanan tidak ada".into()))?;
     if v.ustadz_id != ustadz_user_id {
         return Err(AppError::NotFound("pesanan tidak ada".into()));
@@ -987,21 +995,54 @@ pub async fn complete_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64
     if v.status != "CONFIRMED" {
         return Err(AppError::Conflict(format!("status {}, harus CONFIRMED", v.status)));
     }
-    // Aturan 16Sep: ustadz hanya bisa menandai selesai SETELAH waktu kunjungan berakhir
-    // (scheduled_at + duration_hours). Batas atas tetap 24 jam setelahnya. Sebelum itu -> admin force.
-    let in_window: i64 = sqlx::query_scalar(
-        "SELECT CASE WHEN UTC_TIMESTAMP() >= DATE_ADD(?, INTERVAL duration_hours HOUR) \
-              AND UTC_TIMESTAMP() <= DATE_ADD(DATE_ADD(?, INTERVAL duration_hours HOUR), INTERVAL 24 HOUR) \
-         THEN 1 ELSE 0 END FROM ustadz_visits WHERE id = ?")
-        .bind(&v.scheduled_at).bind(&v.scheduled_at).bind(visit_id)
-        .fetch_one(&state.pool).await.map_err(dberr)?;
-    if in_window == 0 {
-        return Err(AppError::Unprocessable("belum/kurang dari jadwal — kunjungan hanya bisa ditandai selesai setelah waktunya berakhir".into()));
+    if state.visit_schedule_rules() {
+        let in_window: i64 = sqlx::query_scalar(
+            "SELECT CASE WHEN UTC_TIMESTAMP() >= DATE_SUB(?, INTERVAL 30 MINUTE) \
+                  AND UTC_TIMESTAMP() <= DATE_ADD(DATE_ADD(?, INTERVAL duration_hours HOUR), INTERVAL 24 HOUR) \
+             THEN 1 ELSE 0 END FROM ustadz_visits WHERE id = ?")
+            .bind(&v.scheduled_at).bind(&v.scheduled_at).bind(visit_id)
+            .fetch_one(&state.pool).await.map_err(dberr)?;
+        if in_window == 0 {
+            return Err(AppError::Unprocessable("belum/kurang dari jadwal — mulai kunjungan hanya bisa sekitar jadwal (H-30 mnt s.d. selesai+24 jam)".into()));
+        }
     }
     let mut tx = state.pool.begin().await.map_err(dberr)?;
-    sqlx::query("UPDATE ustadz_visits SET status = 'COMPLETED', completed_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'CONFIRMED'")
+    sqlx::query("UPDATE ustadz_visits SET status = 'IN_PROGRESS', started_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'CONFIRMED'")
         .bind(visit_id).execute(&mut *tx).await.map_err(dberr)?;
-    log_history(&mut *tx, visit_id, Some("CONFIRMED"), "COMPLETED", Some(ustadz_user_id), "kunjungan selesai").await?;
+    log_history(&mut *tx, visit_id, Some("CONFIRMED"), "IN_PROGRESS", Some(ustadz_user_id), "ustadz memulai kunjungan").await?;
+    notify(&mut *tx, v.user_id, "VISIT_STARTED", "Kunjungan dimulai",
+        &format!("Ustadz telah memulai kunjungan jadwal {}.", v.scheduled_at), &visit_id.to_string()).await?;
+    tx.commit().await.map_err(dberr)?;
+    let v2 = fetch_visit(&state.pool, visit_id).await?.unwrap();
+    Ok(visit_out(&state.pool, &v2, None).await?)
+}
+
+pub async fn complete_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64) -> Result<VisitOut, AppError> {
+    let v = fetch_visit(&state.pool, visit_id).await?.ok_or_else(|| AppError::NotFound("pesanan tidak ada".into()))?;
+    if v.ustadz_id != ustadz_user_id {
+        return Err(AppError::NotFound("pesanan tidak ada".into()));
+    }
+    if !matches!(v.status.as_str(), "CONFIRMED" | "IN_PROGRESS") {
+        return Err(AppError::Conflict(format!("status {}, harus CONFIRMED/IN_PROGRESS", v.status)));
+    }
+    // Aturan 16Sep: ustadz hanya bisa menandai selesai SETELAH waktu kunjungan berakhir
+    // (scheduled_at + duration_hours). Batas atas tetap 24 jam setelahnya.
+    // Mode testing (MQ_VISIT_SCHEDULE_RULES_ENABLED=false): jendela DILEWATI — bisa complete kapan saja.
+    if state.visit_schedule_rules() {
+        let in_window: i64 = sqlx::query_scalar(
+            "SELECT CASE WHEN UTC_TIMESTAMP() >= DATE_ADD(?, INTERVAL duration_hours HOUR) \
+                  AND UTC_TIMESTAMP() <= DATE_ADD(DATE_ADD(?, INTERVAL duration_hours HOUR), INTERVAL 24 HOUR) \
+             THEN 1 ELSE 0 END FROM ustadz_visits WHERE id = ?")
+            .bind(&v.scheduled_at).bind(&v.scheduled_at).bind(visit_id)
+            .fetch_one(&state.pool).await.map_err(dberr)?;
+        if in_window == 0 {
+            return Err(AppError::Unprocessable("belum/kurang dari jadwal — kunjungan hanya bisa ditandai selesai setelah waktunya berakhir".into()));
+        }
+    }
+    let mut tx = state.pool.begin().await.map_err(dberr)?;
+    sqlx::query("UPDATE ustadz_visits SET status = 'COMPLETED', completed_at = UTC_TIMESTAMP() WHERE id = ? AND status IN ('CONFIRMED','IN_PROGRESS')")
+        .bind(visit_id).execute(&mut *tx).await.map_err(dberr)?;
+    log_history(&mut *tx, visit_id, Some(v.status.as_str()), "COMPLETED", Some(ustadz_user_id), "kunjungan selesai").await?;
     notify(&mut *tx, v.user_id, "KHATMIL_ASSIGN_RESULT", "Kunjungan selesai",
         &format!("Alhamdulillah, kunjungan {} selesai. Beri rating untuk ustadz Anda.", v.scheduled_at), &visit_id.to_string()).await?;
     notify(&mut *tx, ustadz_user_id, "KHATMIL_ASSIGN_RESULT", "Nilai santri Anda",
@@ -1058,14 +1099,14 @@ pub async fn admin_list_visits(pool: &MySqlPool, f: &AdminVisitFilter, limit: i6
 
 pub async fn admin_force_complete(state: &AppState, admin_id: i64, visit_id: i64) -> Result<VisitOut, AppError> {
     let v = fetch_visit(&state.pool, visit_id).await?.ok_or_else(|| AppError::NotFound("pesanan tidak ada".into()))?;
-    if !matches!(v.status.as_str(), "CONFIRMED" | "COMPLETED" | "REVIEWED") {
+    if !matches!(v.status.as_str(), "CONFIRMED" | "IN_PROGRESS" | "COMPLETED" | "REVIEWED") {
         return Err(AppError::Unprocessable(format!("status {} tidak bisa dipaksa selesai", v.status)));
     }
-    if v.status == "CONFIRMED" {
+    if matches!(v.status.as_str(), "CONFIRMED" | "IN_PROGRESS") {
         let mut tx = state.pool.begin().await.map_err(dberr)?;
-        sqlx::query("UPDATE ustadz_visits SET status = 'COMPLETED', completed_at = UTC_TIMESTAMP() WHERE id = ? AND status = 'CONFIRMED'")
+        sqlx::query("UPDATE ustadz_visits SET status = 'COMPLETED', completed_at = UTC_TIMESTAMP() WHERE id = ? AND status IN ('CONFIRMED','IN_PROGRESS')")
             .bind(visit_id).execute(&mut *tx).await.map_err(dberr)?;
-        log_history(&mut *tx, visit_id, Some("CONFIRMED"), "COMPLETED", Some(admin_id), "ADMIN force-complete").await?;
+        log_history(&mut *tx, visit_id, Some(v.status.as_str()), "COMPLETED", Some(admin_id), "ADMIN force-complete").await?;
         notify(&mut *tx, v.user_id, "KHATMIL_ASSIGN_RESULT", "Kunjungan selesai (admin)",
             &format!("Kunjungan {} ditandai selesai oleh admin.", v.scheduled_at), &visit_id.to_string()).await?;
         tx.commit().await.map_err(dberr)?;

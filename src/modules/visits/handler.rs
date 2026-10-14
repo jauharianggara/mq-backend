@@ -64,7 +64,7 @@ pub async fn slots(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<
     if !(1..=8).contains(&q.hours) {
         return Err(AppError::Unprocessable("durasi 1-8 jam".into()));
     }
-    let (slots, max_hours) = svc::slots_for_date(&st.pool, q.ustadz_id, &q.date, q.hours).await?;
+    let (slots, max_hours) = svc::slots_for_date(&st.pool, q.ustadz_id, &q.date, q.hours, st.visit_schedule_rules()).await?;
     Ok(ok(
         SlotsOut {
             date: q.date.clone(),
@@ -264,6 +264,13 @@ pub async fn decline_visit(cu: CurrentUser, State(st): State<AppState>, Path(id)
 pub async fn complete_visit(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
     ustadz_perm(&cu)?;
     let out = svc::complete_visit(&st, cu.user_id, id).await?;
+    Ok(ok(out, StatusCode::OK))
+}
+
+/// Mulai kunjungan (check-in ustadz): CONFIRMED -> IN_PROGRESS.
+pub async fn start_visit(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
+    ustadz_perm(&cu)?;
+    let out = svc::start_visit(&st, cu.user_id, id).await?;
     Ok(ok(out, StatusCode::OK))
 }
 

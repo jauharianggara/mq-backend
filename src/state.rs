@@ -16,6 +16,9 @@ pub struct AppState {
     /// kill-switch semua rate-limit in-process (MQ_RATE_LIMIT_ENABLED, default true).
     /// false = semua gate no-op (allow) — dipakai saat fase dev/testing aplikasi.
     rate_limit_enabled: bool,
+    /// kill-switch aturan jadwal kunjungan (MQ_VISIT_SCHEDULE_RULES_ENABLED, default true).
+    /// false = mode testing: boleh booking jam dekat, start/complete kapan saja tanpa jendela waktu.
+    visit_schedule_rules: bool,
     /// cache string generik in-process (mis. quran:surahs 24h)
     pub cache_str: Cache<&'static str, std::sync::Arc<String>>,
     /// gate resend-verification 60s per user (in-process — keputusan #13)
@@ -58,6 +61,9 @@ impl AppState {
             rate_limit_enabled: std::env::var("MQ_RATE_LIMIT_ENABLED")
                 .map(|v| v != "false")
                 .unwrap_or(true),
+            visit_schedule_rules: std::env::var("MQ_VISIT_SCHEDULE_RULES_ENABLED")
+                .map(|v| v != "false")
+                .unwrap_or(true),
             resend_gate_cache: Cache::builder()
                 .time_to_live(std::time::Duration::from_secs(60))
                 .build(),
@@ -91,6 +97,10 @@ impl AppState {
 
     pub fn dev_expose_tokens(&self) -> bool {
         self.dev_expose_tokens
+    }
+
+    pub fn visit_schedule_rules(&self) -> bool {
+        self.visit_schedule_rules
     }
 
     /// true = boleh kirim; false = rate-limited. Kill-switch MQ_RATE_LIMIT_ENABLED=false -> selalu true.
