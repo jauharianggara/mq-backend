@@ -836,7 +836,7 @@ paths:
   /admin/users/{id}:
     patch:
       tags: [admin]
-      summary: Update user (status akun, role — users.manage; audit)
+      summary: Update user (status akun, role, reset kata sandi — users.manage; audit; sandi TIDAK tercatat)
       parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
       requestBody:
         content:
@@ -847,8 +847,10 @@ paths:
                 status: {type: string, enum: [PENDING_VERIFICATION, ACTIVE, SUSPENDED, DEACTIVATED]}
                 add_role: {type: string}
                 remove_role: {type: string}
+                password: {type: string, minLength: 8, description: "reset kata sandi — semua sesi perangkat dipaksa keluar"}
       responses:
         "200": { description: OK }
+        "404": { description: pengguna tidak ditemukan }
   /admin/dashboard:
     get:
       tags: [admin]
@@ -882,6 +884,476 @@ paths:
         - {name: entity_type, in: query, schema: {type: string}}
         - {name: limit, in: query, schema: {type: integer}}
         - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        "200": { description: OK }
+
+  # ---------------- KUNJUNGAN / PESAN USTADZ (santri) ----------------
+  /visits/ustadz/nearby:
+    get:
+      tags: [visits]
+      summary: Ustadz terdekat (radius setting visit_radius_km, default 5 km) — hanya ustadz verified + accepting + punya slot & titik lokasi
+      parameters:
+        - {name: lat, in: query, required: true, schema: {type: number}}
+        - {name: lng, in: query, required: true, schema: {type: number}}
+      responses:
+        "200": { description: OK }
+  /visits/slots:
+    get:
+      tags: [visits]
+      summary: Jam terbuka ustadz per tanggal (WIB) — start_time create visit WAJIB dari sini
+      parameters:
+        - {name: ustadz_id, in: query, required: true, schema: {type: integer}}
+        - {name: date, in: query, required: true, schema: {type: string, format: date}}
+        - {name: hours, in: query, schema: {type: integer, minimum: 1, maximum: 8}}
+      responses:
+        "200": { description: OK }
+  /visits:
+    get:
+      tags: [visits]
+      summary: Daftar kunjungan saya (santri)
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [visits]
+      summary: Buat pesanan (wajib header Idempotency-Key; hold slot atomik)
+      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string, format: uuid}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ustadz_id, date, start_time, duration_hours]
+              properties:
+                ustadz_id: {type: integer}
+                date: {type: string, format: date, description: WIB}
+                start_time: {type: string, example: "09:00"}
+                duration_hours: {type: integer, minimum: 1, maximum: 8}
+                lat: {type: number, description: kosong = pakai titik rumah}
+                lng: {type: number}
+                address_label: {type: string}
+                note: {type: string}
+      responses:
+        "201": { description: Created }
+        "409": { description: slot diambil / overlap }
+        "422": { description: validasi gagal }
+  /visits/{id}:
+    get:
+      tags: [visits]
+      summary: Detail kunjungan
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /visits/{id}/pay:
+    post:
+      tags: [visits]
+      summary: Bayar via invoice Xendit (retry aman — invoice aktif dipakai ulang)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /visits/{id}/pay-deposit:
+    post:
+      tags: [visits]
+      summary: Bayar dari saldo deposit wallet (409 bila saldo kurang)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /visits/{id}/cancel:
+    post:
+      tags: [visits]
+      summary: Batalkan (santri) — refund penuh bila >= visit_cancel_free_hours (default 2 jam) sebelum jadwal
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /visits/{id}/review:
+    get:
+      tags: [visits]
+      summary: Status penilaian double-blind (isi lawan terlihat setelah kedua arah / window)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [visits]
+      summary: Kirim penilaian (rating 1-5 + komentar; immutable)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating]
+              properties:
+                rating: {type: integer, minimum: 1, maximum: 5}
+                comment: {type: string}
+      responses:
+        "201": { description: Created }
+  /visits/{id}/messages:
+    get:
+      tags: [visits]
+      summary: Chat kunjungan (aktif saat CONFIRMED/IN_PROGRESS)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [visits]
+      summary: Kirim chat
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: {type: string}
+      responses:
+        "201": { description: Created }
+  /visits/ustadz/{id}/reviews:
+    get:
+      tags: [visits]
+      summary: Review publik ustadz (hanya yang revealed)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+
+  # ---------------- KUNJUNGAN (ustadz) ----------------
+  /ustadz/visits:
+    get:
+      tags: [visits]
+      summary: Kunjungan ustadz (incoming + upcoming + history)
+      responses:
+        "200": { description: OK }
+  /ustadz/visits/settings:
+    get:
+      tags: [visits]
+      summary: Pengaturan kunjungan (menerima, kapasitas, tarif/jam min 10rb)
+      responses:
+        "200": { description: OK }
+    put:
+      tags: [visits]
+      summary: Simpan pengaturan kunjungan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                is_accepting: {type: boolean}
+                max_active_visits: {type: integer}
+                price_per_hour: {type: integer, minimum: 10000}
+      responses:
+        "200": { description: OK }
+  /ustadz/visit/availability:
+    get:
+      tags: [visits]
+      summary: Ketersediaan mingguan + tanggal libur
+      responses:
+        "200": { description: OK }
+  /ustadz/visit/availability/slots:
+    post:
+      tags: [visits]
+      summary: Tambah rentang mingguan (weekday 0=Minggu..6=Sabtu; menit dari 00:00; maks 3 rentang/hari; min 1 jam; anti tumpang tindih 409)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [weekday, start_minute, end_minute]
+              properties:
+                weekday: {type: integer, minimum: 0, maximum: 6}
+                start_minute: {type: integer, minimum: 0}
+                end_minute: {type: integer, maximum: 1440}
+      responses:
+        "201": { description: Created }
+  /ustadz/visit/availability/slots/{id}:
+    delete:
+      tags: [visits]
+      summary: Hapus rentang mingguan
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /ustadz/visit/availability/blackouts:
+    post:
+      tags: [visits]
+      summary: Tambah tanggal libur (menimpa jadwal mingguan)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [off_date]
+              properties:
+                off_date: {type: string, format: date}
+                note: {type: string}
+      responses:
+        "201": { description: Created }
+  /ustadz/visit/availability/blackouts/{date}:
+    delete:
+      tags: [visits]
+      summary: Hapus tanggal libur
+      parameters: [{name: date, in: path, required: true, schema: {type: string, format: date}}]
+      responses:
+        "200": { description: OK }
+  /ustadz/visits/{id}/confirm:
+    post:
+      tags: [visits]
+      summary: Terima pesanan (kapasitas + overlap dicek — 409 bentrok)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /ustadz/visits/{id}/decline:
+    post:
+      tags: [visits]
+      summary: Tolak pesanan (wajib alasan; dana santri kembali)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: {type: string}
+      responses:
+        "200": { description: OK }
+  /ustadz/visits/{id}/start:
+    post:
+      tags: [visits]
+      summary: "Mulai kunjungan / check-in: CONFIRMED -> IN_PROGRESS (catat started_at, notif santri). Jendela normal: H-30 mnt s.d. jadwal+durasi+24 jam"
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+        "409": { description: status bukan CONFIRMED }
+        "422": { description: di luar jendela waktu (aturan bisa dilonggarkan via MQ_VISIT_SCHEDULE_RULES_ENABLED) }
+  /ustadz/visits/{id}/complete:
+    post:
+      tags: [visits]
+      summary: "Tandai selesai (CONFIRMED/IN_PROGRESS -> COMPLETED; penghasilan masuk dompet ustadz). Jendela normal: setelah jadwal+durasi, maks +24 jam"
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+
+  # ---------------- WALLET & PENARIKAN ----------------
+  /wallet:
+    get:
+      tags: [wallet]
+      summary: Saldo dompet saya
+      responses:
+        "200": { description: OK }
+  /wallet/topup:
+    post:
+      tags: [wallet]
+      summary: Isi saldo (invoice Xendit topup-{uuid})
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount: {type: integer, minimum: 10000}
+      responses:
+        "200": { description: OK }
+  /wallet/transactions:
+    get:
+      tags: [wallet]
+      summary: Mutasi (TOPUP/PAYMENT/REFUND/EARNING/PAYOUT/ADJUST + balance_after)
+      responses:
+        "200": { description: OK }
+  /me/wallet-adjustments:
+    get:
+      tags: [wallet]
+      summary: Penyesuaian saldo dari admin (menunggu ACC saya)
+      responses:
+        "200": { description: OK }
+  /me/wallet-adjustments/{id}/accept:
+    post:
+      tags: [wallet]
+      summary: Setujui penyesuaian (saldo berubah)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /me/wallet-adjustments/{id}/reject:
+    post:
+      tags: [wallet]
+      summary: Tolak penyesuaian
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /ustadz/payouts:
+    get:
+      tags: [wallet]
+      summary: Penarikan saya (saldo dikunci sejak pengajuan; min payout_min_amount default 50rb)
+      responses:
+        "200": { description: OK }
+    post:
+      tags: [wallet]
+      summary: Ajukan penarikan (debit penuh; amount diterima = amount - fee default 6.500)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, bank_name, bank_account_no, bank_account_name]
+              properties:
+                amount: {type: integer}
+                bank_name: {type: string}
+                bank_account_no: {type: string}
+                bank_account_name: {type: string}
+      responses:
+        "201": { description: Created }
+
+  # ---------------- PAYMENTS (webhook/dev) ----------------
+  /payments/xendit/callback:
+    post:
+      tags: [payments]
+      summary: Webhook Xendit (invoice topup-* / visit-*; idempotent)
+      security: []
+      responses:
+        "200": { description: OK }
+  /payments/xendit/simulate:
+    post:
+      tags: [payments]
+      summary: Simulasi bayar (hanya mode mock + dev) — event "paid"/"expired"
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [external_id]
+              properties:
+                external_id: {type: string}
+                event: {type: string, enum: [paid, expired]}
+      responses:
+        "200": { description: OK }
+
+  # ---------------- ADMIN: kunjungan, penarikan, dompet, verifikasi ----------------
+  /admin/visits:
+    get:
+      tags: [admin]
+      summary: Semua kunjungan (filter status/ustadz_id/user_id; sort)
+      parameters:
+        - {name: status, in: query, schema: {type: string}}
+        - {name: ustadz_id, in: query, schema: {type: integer}}
+        - {name: user_id, in: query, schema: {type: integer}}
+        - {name: sort, in: query, schema: {type: string}}
+      responses:
+        "200": { description: OK }
+  /admin/visits/{id}:
+    get:
+      tags: [admin]
+      summary: Detail kunjungan (timeline lengkap)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /admin/visits/{id}/messages:
+    get:
+      tags: [admin]
+      summary: Chat kunjungan read-only (penyelesaian sengketa)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /admin/visits/{id}/force-complete:
+    post:
+      tags: [admin]
+      summary: Paksa selesai (bypass jendela waktu; CONFIRMED/IN_PROGRESS -> COMPLETED + penghasilan)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /admin/visits/{id}/force-cancel:
+    post:
+      tags: [admin]
+      summary: Paksa batal (wajib alasan; refund_override opsional)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: {type: string}
+                refund_override: {type: boolean}
+      responses:
+        "200": { description: OK }
+  /admin/ustadz/{id}/verify:
+    post:
+      tags: [admin]
+      summary: Verifikasi ustadz (users.manage) — set/clear ustadz_profiles.verified_at; verified=true sekalian beri role USTADZ. Gate visibilitas di pencarian santri
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                verified: {type: boolean, default: true}
+      responses:
+        "200": { description: OK }
+        "404": { description: pengguna tidak ditemukan }
+  /admin/payouts:
+    get:
+      tags: [admin]
+      summary: Daftar penarikan (filter status)
+      parameters: [{name: status, in: query, schema: {type: string}}]
+      responses:
+        "200": { description: OK }
+  /admin/payouts/{id}/approve:
+    post:
+      tags: [admin]
+      summary: Setujui penarikan (status APPROVED — siap ditransfer)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses:
+        "200": { description: OK }
+  /admin/payouts/{id}/reject:
+    post:
+      tags: [admin]
+      summary: Tolak penarikan (refund penuh = amount + fee)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: {type: string}
+      responses:
+        "200": { description: OK }
+  /admin/payouts/mark-transferred:
+    post:
+      tags: [admin]
+      summary: Tandai sudah ditransfer (bulk ids)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payout_ids]
+              properties:
+                payout_ids: {type: array, items: {type: integer}}
+      responses:
+        "200": { description: OK }
+  /admin/wallet:
+    get:
+      tags: [admin]
+      summary: Saldo semua pengguna (filter q/role SANTRI|USTADZ)
+      parameters:
+        - {name: q, in: query, schema: {type: string}}
+        - {name: role, in: query, schema: {type: string, enum: [SANTRI, USTADZ]}}
       responses:
         "200": { description: OK }
 
