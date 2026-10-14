@@ -11,9 +11,10 @@ use crate::state::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         // NOTE: GET /me sudah terdaftar di modul auth (interim) — tetap satu router nest
-        .route("/me", axum::routing::patch(handler::patch_me).delete(handler::delete_me))
+        // PUT & PATCH dua-duanya diterima (toleransi kontrak app — build app sempat kirim PUT /me → 405)
+        .route("/me", axum::routing::patch(handler::patch_me).put(handler::patch_me).delete(handler::delete_me))
         .route("/me/profile", get(handler::my_profile))
-        .route("/me/home-point", get(handler::get_home_point).put(handler::put_home_point))
+        .route("/me/home-point", get(handler::get_home_point).put(handler::put_home_point).patch(handler::put_home_point))
         .route("/me/progress/summary", get(handler::progress_summary))
         .route("/me/devices", get(handler::list_devices).post(handler::register_device))
         .route("/me/devices/{id}", delete(handler::delete_device))

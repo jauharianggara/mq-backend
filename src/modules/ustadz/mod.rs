@@ -10,10 +10,11 @@ use crate::state::AppState;
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/me/ustadz/specializations", get(handler::get_specializations).put(handler::put_specializations))
-        .route("/me/ustadz/availability", get(handler::get_availability).put(handler::put_availability))
+        // PUT & PATCH dua-duanya diterima (toleransi kontrak app — anti 405 method-mismatch)
+        .route("/me/ustadz/specializations", get(handler::get_specializations).put(handler::put_specializations).patch(handler::put_specializations))
+        .route("/me/ustadz/availability", get(handler::get_availability).put(handler::put_availability).patch(handler::put_availability))
         .route("/ustadz/me/stats", get(handler::stats))
-        .route("/me/ustadz/detail", get(handler::get_detail).put(handler::put_detail))
-        .route("/me/ustadz/bank-account", get(handler::get_bank).put(handler::put_bank))
-        .route("/me/ustadz/point", get(handler::get_point).put(handler::put_point))
+        .route("/me/ustadz/detail", get(handler::get_detail).put(handler::put_detail).patch(handler::put_detail))
+        .route("/me/ustadz/bank-account", get(handler::get_bank).put(handler::put_bank).patch(handler::put_bank))
+        .route("/me/ustadz/point", get(handler::get_point).put(handler::put_point).patch(handler::put_point))
 }
