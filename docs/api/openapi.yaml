@@ -60,7 +60,7 @@ paths:
   /auth/register:
     post:
       tags: [auth]
-      summary: Registrasi santri (open; consent PDP dicatat)
+      summary: Registrasi akun (open; consent PDP dicatat). Default SANTRI; role USTADZ = calon ustadz (login app ustadz; tampil di nearby hanya setelah admin verifikasi ustadz_profiles)
       security: []
       requestBody:
         required: true
@@ -75,6 +75,7 @@ paths:
                 password: {type: string, minLength: 8}
                 full_name: {type: string}
                 consent: {type: boolean, description: "harus true (UU PDP)"}
+                role: {type: string, enum: [SANTRI, USTADZ], description: "opsional, default SANTRI; nilai lain 422"}
       responses:
         "201": { $ref: "#/components/responses/Created" }
         "422": { $ref: "#/components/responses/Unprocessable" }

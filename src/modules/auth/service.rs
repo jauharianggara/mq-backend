@@ -55,6 +55,20 @@ pub async fn register(pool: &MySqlPool, dev_expose: bool, req: RegisterReq) -> R
         return Err(AppError::Unprocessable("email atau phone wajib salah satu".into()));
     }
 
+    // role opsional: None/SANTRI = santri biasa; USTADZ = mendaftar sebagai calon ustadz
+    // (akun bisa login app ustadz, tapi TIDAK muncul di nearby/menerima pesanan sebelum
+    // admin set ustadz_profiles.verified_at). Nilai lain ditolak eksplisit — bukan silent-ignore.
+    let role_code = match req.role.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| s.to_uppercase()) {
+        None => "SANTRI",
+        Some(s) if s == "SANTRI" => "SANTRI",
+        Some(s) if s == "USTADZ" => "USTADZ",
+        Some(other) => {
+            return Err(AppError::Unprocessable(format!(
+                "role tidak valid: '{other}' — hanya SANTRI atau USTADZ"
+            )));
+        }
+    };
+
     // duplikat -> 409
     if let Some(e) = email {
         let n: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE email = ?").bind(e)
@@ -78,9 +92,10 @@ pub async fn register(pool: &MySqlPool, dev_expose: bool, req: RegisterReq) -> R
         sqlx::query("INSERT IGNORE INTO user_profiles (user_id, full_name) VALUES (?, ?)")
             .bind(uid).bind(name.trim()).execute(pool).await.map_err(dberr)?;
     }
-    // role default SANTRI
-    sqlx::query("INSERT IGNORE INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE code = 'SANTRI'")
-        .bind(uid).execute(pool).await.map_err(dberr)?;
+    // role sesuai body (default SANTRI); ustadz TIDAK diberi role SANTRI —
+    // role USTADZ di seed sudah mencakup izin app ustadz (khatmil.read, ustadz.visits.manage, dst)
+    sqlx::query("INSERT IGNORE INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE code = ?")
+        .bind(uid).bind(role_code).execute(pool).await.map_err(dberr)?;
 
     // consent -> activity_events (keputusan #12 PDP)
     sqlx::query("INSERT INTO activity_events (user_id, event_type, ref_type, ref_id, payload) VALUES (?, 'auth.registered', 'user', ?, '{\"consent\":true,\"terms\":1}')")

@@ -8,6 +8,9 @@ pub struct RegisterReq {
     pub password: String,
     pub full_name: Option<String>,
     pub consent: bool,
+    /// Opsional (default SANTRI). Whitelist: SANTRI | USTADZ — nilai lain 422.
+    /// USTADZ hanya membuka app ustadz; kurasi tetap lewat ustadz_profiles.verified_at (admin).
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
