@@ -13,6 +13,9 @@ pub struct AppState {
     pub jwt_secret: Arc<String>,
     pub storage: Option<Arc<Storage>>,
     dev_expose_tokens: bool,
+    /// kill-switch semua rate-limit in-process (MQ_RATE_LIMIT_ENABLED, default true).
+    /// false = semua gate no-op (allow) — dipakai saat fase dev/testing aplikasi.
+    rate_limit_enabled: bool,
     /// cache string generik in-process (mis. quran:surahs 24h)
     pub cache_str: Cache<&'static str, std::sync::Arc<String>>,
     /// gate resend-verification 60s per user (in-process — keputusan #13)
@@ -52,6 +55,9 @@ impl AppState {
             dev_expose_tokens: std::env::var("MQ_DEV_EXPOSE_TOKENS")
                 .map(|v| v == "true")
                 .unwrap_or(false),
+            rate_limit_enabled: std::env::var("MQ_RATE_LIMIT_ENABLED")
+                .map(|v| v != "false")
+                .unwrap_or(true),
             resend_gate_cache: Cache::builder()
                 .time_to_live(std::time::Duration::from_secs(60))
                 .build(),
@@ -87,8 +93,11 @@ impl AppState {
         self.dev_expose_tokens
     }
 
-    /// true = boleh kirim (belum pernah dalam 60s); false = rate-limited
-    fn gate(cache: &Cache<i64, ()>, user_id: &i64) -> bool {
+    /// true = boleh kirim; false = rate-limited. Kill-switch MQ_RATE_LIMIT_ENABLED=false -> selalu true.
+    fn gate(&self, cache: &Cache<i64, ()>, user_id: &i64) -> bool {
+        if !self.rate_limit_enabled {
+            return true;
+        }
         if cache.contains_key(user_id) {
             return false;
         }
@@ -96,24 +105,24 @@ impl AppState {
         true
     }
     pub fn resend_gate(&self, user_id: &i64) -> bool {
-        Self::gate(&self.resend_gate_cache, user_id)
+        self.gate(&self.resend_gate_cache, user_id)
     }
     pub fn khatmil_claim_gate(&self, user_id: &i64) -> bool {
-        Self::gate(&self.khatmil_claim_cache, user_id)
+        self.gate(&self.khatmil_claim_cache, user_id)
     }
     pub fn khatmil_progress_gate(&self, user_id: &i64) -> bool {
-        Self::gate(&self.khatmil_progress_cache, user_id)
+        self.gate(&self.khatmil_progress_cache, user_id)
     }
     pub fn visit_create_gate(&self, user_id: &i64) -> bool {
-        Self::gate(&self.visit_create_cache, user_id)
+        self.gate(&self.visit_create_cache, user_id)
     }
     pub fn visit_nearby_gate(&self, user_id: &i64) -> bool {
-        Self::gate(&self.visit_nearby_cache, user_id)
+        self.gate(&self.visit_nearby_cache, user_id)
     }
     pub fn visit_location_gate(&self, user_id: &i64) -> bool {
-        Self::gate(&self.visit_location_cache, user_id)
+        self.gate(&self.visit_location_cache, user_id)
     }
     pub fn visit_chat_gate(&self, user_id: &i64) -> bool {
-        Self::gate(&self.visit_chat_cache, user_id)
+        self.gate(&self.visit_chat_cache, user_id)
     }
 }
