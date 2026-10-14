@@ -43,6 +43,7 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/reviews/{id}/unhide", post(admin_review_unhide))
         .route("/admin/santri/{id}", get(santri_detail))
         .route("/admin/ustadz/{id}", get(ustadz_detail))
+        .route("/admin/ustadz/{id}/verify", post(ustadz_verify))
         .route("/admin/users/{id}", patch(users_patch))
 }
 
@@ -321,6 +322,11 @@ async fn ustadz_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Quer
 
 async fn users_patch(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>, Json(body): Json<serde_json::Value>) -> Result<Response, AppError> {
     cu.require("users.manage")?;
+    let exists: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE id = ?").bind(id)
+        .fetch_one(&st.pool).await.map_err(dberr)?;
+    if exists.0 == 0 {
+        return Err(AppError::NotFound("pengguna tidak ditemukan".into()));
+    }
     let status = body.get("status").and_then(|v| v.as_str());
     if let Some(s) = status {
         if !matches!(s, "PENDING_VERIFICATION" | "ACTIVE" | "SUSPENDED" | "DEACTIVATED") {
@@ -328,6 +334,17 @@ async fn users_patch(cu: CurrentUser, State(st): State<AppState>, Path(id): Path
         }
         sqlx::query("UPDATE users SET status = ? WHERE id = ?").bind(s).bind(id)
             .execute(&st.pool).await.map_err(dberr)?;
+    }
+    if let Some(pw) = body.get("password").and_then(|v| v.as_str()) {
+        if pw.len() < 8 {
+            return Err(AppError::Unprocessable("password minimal 8 karakter".into()));
+        }
+        let hash = crate::modules::auth::service::hash_password(pw);
+        sqlx::query("UPDATE users SET password_hash = ? WHERE id = ?")
+            .bind(&hash).bind(id).execute(&st.pool).await.map_err(dberr)?;
+        // reset kata sandi = paksa keluar semua sesi perangkat (keamanan)
+        sqlx::query("DELETE FROM user_sessions WHERE user_id = ?")
+            .bind(id).execute(&st.pool).await.map_err(dberr)?;
     }
     if let Some(role) = body.get("add_role").and_then(|v| v.as_str()) {
         sqlx::query("INSERT IGNORE INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE code = ?")
@@ -337,11 +354,45 @@ async fn users_patch(cu: CurrentUser, State(st): State<AppState>, Path(id): Path
         sqlx::query("DELETE ur FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? AND r.code = ?")
             .bind(id).bind(role).execute(&st.pool).await.map_err(dberr)?;
     }
+    // JANGAN catat kata sandi mentah ke audit_logs
+    let mut audit_body = body.clone();
+    if audit_body.get("password").is_some() {
+        audit_body["password"] = json!("[REDACTED]");
+    }
     let _ = sqlx::query("INSERT INTO audit_logs (actor_id, action, module, entity_type, entity_id, new_value) \
                          VALUES (?, 'UPDATE', 'users', 'users', ?, ?)")
-        .bind(cu.user_id).bind(id.to_string()).bind(body.to_string())
+        .bind(cu.user_id).bind(id.to_string()).bind(audit_body.to_string())
         .execute(&st.pool).await;
     Ok(ok(json!({ "updated": true }), StatusCode::OK))
+}
+
+/// Verifikasi ustadz (set/clear ustadz_profiles.verified_at) — gate visibilitas di pencarian
+/// santri (nearby) & syarat menerima kunjungan. verified=true sekaligus memastikan role USTADZ
+/// agar akun bisa login app ustadz (satu klik = verifikasi + promote lengkap).
+async fn ustadz_verify(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>, Json(body): Json<serde_json::Value>) -> Result<Response, AppError> {
+    cu.require("users.manage")?;
+    let exists: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE id = ?").bind(id)
+        .fetch_one(&st.pool).await.map_err(dberr)?;
+    if exists.0 == 0 {
+        return Err(AppError::NotFound("pengguna tidak ditemukan".into()));
+    }
+    let verified = body.get("verified").and_then(|v| v.as_bool()).unwrap_or(true);
+    sqlx::query("INSERT IGNORE INTO ustadz_profiles (user_id) VALUES (?)")
+        .bind(id).execute(&st.pool).await.map_err(dberr)?;
+    if verified {
+        sqlx::query("UPDATE ustadz_profiles SET verified_at = UTC_TIMESTAMP() WHERE user_id = ? AND verified_at IS NULL")
+            .bind(id).execute(&st.pool).await.map_err(dberr)?;
+        sqlx::query("INSERT IGNORE INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE code = 'USTADZ'")
+            .bind(id).execute(&st.pool).await.map_err(dberr)?;
+    } else {
+        sqlx::query("UPDATE ustadz_profiles SET verified_at = NULL WHERE user_id = ?")
+            .bind(id).execute(&st.pool).await.map_err(dberr)?;
+    }
+    let _ = sqlx::query("INSERT INTO audit_logs (actor_id, action, module, entity_type, entity_id, new_value) \
+                         VALUES (?, 'UPDATE', 'ustadz_profiles', 'ustadz_verify', ?, ?)")
+        .bind(cu.user_id).bind(id.to_string()).bind(json!({ "verified": verified }).to_string())
+        .execute(&st.pool).await;
+    Ok(ok(json!({ "verified": verified }), StatusCode::OK))
 }
 
 // ===================== detail agregat: SANTRI & USTADZ =====================

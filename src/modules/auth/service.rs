@@ -8,7 +8,7 @@ use crate::modules::auth::dto::*;
 use crate::modules::auth::token::*;
 use crate::shared::error::AppError;
 
-fn hash_password(pw: &str) -> String {
+pub(crate) fn hash_password(pw: &str) -> String {
     let salt = SaltString::encode_b64(uuid::Uuid::new_v4().as_bytes()).expect("salt");
     Argon2::default().hash_password(pw.as_bytes(), &salt).expect("argon2").to_string()
 }
