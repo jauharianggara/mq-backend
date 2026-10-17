@@ -354,8 +354,9 @@ pub async fn join(pool: &MySqlPool, user_id: i64, campaign_id: i64) -> Result<()
          FROM khatmil_campaigns c WHERE c.id = ?")
         .bind(campaign_id).fetch_optional(pool).await.map_err(dberr)?
         .ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
-    if status != "ACTIVE" {
-        return Err(AppError::Conflict(format!("campaign berstatus {status} — hanya ACTIVE bisa join")));
+    if !matches!(status.as_str(), "SCHEDULED" | "ACTIVE") {
+        return Err(AppError::Conflict(format!(
+            "campaign berstatus {status} — hanya SCHEDULED/ACTIVE bisa join")));
     }
     if let Some(mx) = maxp {
         if curp >= mx {
