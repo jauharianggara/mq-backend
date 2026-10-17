@@ -231,7 +231,7 @@ fn parse_date(d: Option<&str>) -> Result<Option<chrono::NaiveDate>, AppError> {
 // Detail campaign — peta juz v2: assignment TERBARU per juz (aktif ATAU COMPLETED terakhir)
 // =====================================================================
 
-pub async fn campaign_detail(state: &crate::state::AppState, id: i64) -> Result<CampaignDetail, AppError> {
+pub async fn campaign_detail(state: &crate::state::AppState, user_id: i64, id: i64) -> Result<CampaignDetail, AppError> {
     let pool = &state.pool;
     let base: Option<(i64, String, String, Option<String>, Option<i64>, String, String, i64, i64, i64, i8, i64, i64, f64, Option<String>, Option<i64>)> =
         sqlx::query_as(
@@ -332,6 +332,13 @@ pub async fn campaign_detail(state: &crate::state::AppState, id: i64) -> Result<
         }
     }
 
+    // joined = user pemanggil sudah peserta campaign ini (untuk menyembunyikan
+    // CTA join di app — assignment juz saja tidak cukup: saat SCHEDULED peserta
+    // belum boleh klaim juz).
+    let joined: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM khatmil_participants WHERE campaign_id = ? AND user_id = ?)")
+        .bind(id).bind(user_id).fetch_one(pool).await.map_err(dberr)?;
+
     Ok(CampaignDetail {
         campaign: CampaignOut {
             id: cid, slug, name, description: descr, max_participants: maxp, mode, status, target_khataman: target,
@@ -340,7 +347,7 @@ pub async fn campaign_detail(state: &crate::state::AppState, id: i64) -> Result<
             period_start: ps.clone(), period_end: pe.clone(),
             groups_progress: Vec::new(),
         },
-        juz_map, groups, juz_map_groups, period_start: ps, period_end: pe,
+        juz_map, groups, juz_map_groups, period_start: ps, period_end: pe, joined,
     })
 }
 

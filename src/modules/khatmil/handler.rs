@@ -28,7 +28,7 @@ pub async fn list_campaigns(cu: CurrentUser, State(st): State<AppState>, Query(q
 pub async fn create_campaign(cu: CurrentUser, State(st): State<AppState>, Json(req): Json<CampaignUpsertReq>) -> Result<Response, AppError> {
     cu.require("khatmil.manage")?;
     let id = svc::create_campaign(&st.pool, cu.user_id, req).await?;
-    let d = svc::campaign_detail(&st, id).await?;
+    let d = svc::campaign_detail(&st, cu.user_id, id).await?;
     Ok(ok(d, StatusCode::CREATED))
 }
 
@@ -40,7 +40,7 @@ pub async fn update_campaign(cu: CurrentUser, State(st): State<AppState>, Path(i
 
 pub async fn campaign_detail(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
     cu.require("khatmil.read")?;
-    Ok(ok(svc::campaign_detail(&st, id).await?, StatusCode::OK))
+    Ok(ok(svc::campaign_detail(&st, cu.user_id, id).await?, StatusCode::OK))
 }
 
 pub async fn join(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {

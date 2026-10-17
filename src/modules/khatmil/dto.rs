@@ -99,6 +99,9 @@ pub struct CampaignDetail {
     pub juz_map_groups: Vec<GroupJuzMap>,
     pub period_start: Option<String>,
     pub period_end: Option<String>,
+    /// User pemanggil sudah jadi peserta campaign ini (untuk CTA join di app).
+    #[serde(default)]
+    pub joined: bool,
 }
 
 #[derive(Debug, Serialize)]
