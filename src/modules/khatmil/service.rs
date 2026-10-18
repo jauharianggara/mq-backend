@@ -599,7 +599,7 @@ pub async fn my_assignments(pool: &MySqlPool, user_id: i64) -> Result<Vec<Assign
              JOIN khatmil_participants p ON p.id = a.participant_id \
              JOIN khatmil_campaigns c ON c.id = a.campaign_id \
              LEFT JOIN khatmil_progress pg ON pg.assignment_id = a.id \
-             WHERE p.user_id = ? AND c.status IN ('ACTIVE','SCHEDULED') AND a.status IN ('ASSIGNED','IN_PROGRESS') \
+             WHERE p.user_id = ? AND c.status IN ('ACTIVE','SCHEDULED','COMPLETED') AND a.status IN ('ASSIGNED','IN_PROGRESS','COMPLETED') \
              ORDER BY a.campaign_id, a.juz")
         .bind(user_id).fetch_all(pool).await.map_err(dberr)?;
     Ok(rows.into_iter().map(|r| AssignmentOut {
