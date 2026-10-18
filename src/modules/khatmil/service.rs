@@ -395,14 +395,9 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Op
         .fetch_optional(pool).await.map_err(dberr)?
         .ok_or_else(|| AppError::Unprocessable("join campaign dulu sebelum klaim juz".into()))?;
 
-    // ATURAN: satu santri satu juz — yang sudah memegang tidak boleh klaim lagi
-    let already: Option<(i64,)> = sqlx::query_as(
-        "SELECT juz FROM khatmil_juz_assignments WHERE campaign_id = ? AND participant_id = ? AND status IN ('ASSIGNED','IN_PROGRESS')")
-        .bind(campaign_id).bind(participant.0).fetch_optional(pool).await.map_err(dberr)?;
-    if let Some((held,)) = already {
-        return Err(AppError::Conflict(format!(
-            "Anda sudah memegang juz {held} — satu santri satu juz")));
-    }
+    // Keputusan produk 2026-10-18: satu santri BOLEH memegang beberapa juz —
+    // check "satu santri satu juz" dihapus. Unik per juz tetap dijamin
+    // khatmil_juz_active_uq (campaign_id, juz, active_marker).
 
     // ATURAN: santri memilih juz sendiri (dari peta) - tidak ada auto-assign
     let juz = juz_req.ok_or_else(|| AppError::Unprocessable("pilih juz dari peta dulu".into()))?;
