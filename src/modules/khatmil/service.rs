@@ -152,7 +152,7 @@ pub async fn update_campaign(pool: &MySqlPool, id: i64, req: CampaignUpsertReq) 
     validate_cover(pool, req.cover_media_id).await?;
     let cur: Option<(String, i64)> = sqlx::query_as("SELECT status, group_count FROM khatmil_campaigns WHERE id = ?")
         .bind(id).fetch_optional(pool).await.map_err(dberr)?;
-    let (cur, cur_gc) = cur.ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
+    let (cur, cur_gc) = cur.ok_or_else(|| AppError::NotFound("khotmil tidak ada".into()))?;
     if !transition_ok(&cur, &req.status) {
         return Err(AppError::Conflict(format!("invalid_status_transition: {cur} -> {}", req.status)));
     }
@@ -176,7 +176,7 @@ pub async fn update_campaign(pool: &MySqlPool, id: i64, req: CampaignUpsertReq) 
         .bind(parse_date(req.period_start.as_deref())?).bind(parse_date(req.period_end.as_deref())?)
         .bind(req.min_minutes_per_juz).bind(req.require_manual_verification).bind(req.max_participants).bind(id)
         .execute(pool).await.map_err(dberr)?.rows_affected();
-    if n == 0 { return Err(AppError::NotFound("campaign tidak ada".into())); }
+    if n == 0 { return Err(AppError::NotFound("khotmil tidak ada".into())); }
     if req.remove_cover == Some(true) {
         sqlx::query("UPDATE khatmil_campaigns SET cover_media_id = NULL WHERE id = ?")
             .bind(id).execute(pool).await.map_err(dberr)?;
@@ -243,7 +243,7 @@ pub async fn campaign_detail(state: &crate::state::AppState, user_id: i64, id: i
              FROM khatmil_campaigns c WHERE c.id = ?")
         .bind(id).fetch_optional(pool).await.map_err(dberr)?;
     let (cid, slug, name, descr, maxp, mode, status, target, gc, minmin, rmv, participants, completed, _pct_base, period_join, cover_mid) = base
-        .ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
+        .ok_or_else(|| AppError::NotFound("khotmil tidak ada".into()))?;
     let (ps, pe): (Option<String>, Option<String>) = period_join.as_deref().map(|v| {
         let mut it = v.splitn(2, '|');
         (it.next().map(|x| x.to_string()), it.next().map(|x| x.to_string()))
@@ -360,10 +360,10 @@ pub async fn join(pool: &MySqlPool, user_id: i64, campaign_id: i64) -> Result<()
         "SELECT c.status, c.max_participants, (SELECT COUNT(*) FROM khatmil_participants p WHERE p.campaign_id = c.id) \
          FROM khatmil_campaigns c WHERE c.id = ?")
         .bind(campaign_id).fetch_optional(pool).await.map_err(dberr)?
-        .ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
+        .ok_or_else(|| AppError::NotFound("khotmil tidak ada".into()))?;
     if !matches!(status.as_str(), "SCHEDULED" | "ACTIVE") {
         return Err(AppError::Conflict(format!(
-            "campaign berstatus {status} — hanya SCHEDULED/ACTIVE bisa join")));
+            "khotmil berstatus {status} — hanya Akan Datang/Berlangsung bisa diikuti")));
     }
     if let Some(mx) = maxp {
         if curp >= mx {
@@ -384,16 +384,16 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Op
     let (status, _minmin): (String, i64) = sqlx::query_as(
         "SELECT status, min_minutes_per_juz FROM khatmil_campaigns WHERE id = ?")
         .bind(campaign_id).fetch_optional(pool).await.map_err(dberr)?
-        .ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
-    if status != "SCHEDULED" {
+        .ok_or_else(|| AppError::NotFound("khotmil tidak ada".into()))?;
+    if !matches!(status.as_str(), "SCHEDULED" | "ACTIVE") {
         return Err(AppError::Conflict(format!(
-            "campaign berstatus {status} — klaim juz hanya saat belum dimulai (SCHEDULED)")));
+            "khotmil berstatus {status} — klaim juz sudah ditutup (hanya saat Akan Datang/Berlangsung)")));
     }
     let participant: (i64,) = sqlx::query_as(
         "SELECT id FROM khatmil_participants WHERE campaign_id = ? AND user_id = ?")
         .bind(campaign_id).bind(user_id)
         .fetch_optional(pool).await.map_err(dberr)?
-        .ok_or_else(|| AppError::Unprocessable("join campaign dulu sebelum klaim juz".into()))?;
+        .ok_or_else(|| AppError::Unprocessable("ikut khotmil dulu sebelum klaim juz".into()))?;
 
     // Keputusan produk 2026-10-18: satu santri BOLEH memegang beberapa juz —
     // check "satu santri satu juz" dihapus. Unik per juz tetap dijamin
@@ -417,7 +417,7 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Op
     } else {
         let gid = group_req.ok_or_else(|| AppError::Unprocessable("pilih kelompok dulu".into()))?;
         let (_, _, cnt) = *groups.iter().find(|g| g.0 == gid)
-            .ok_or_else(|| AppError::Unprocessable("kelompok tidak ada di campaign ini".into()))?;
+            .ok_or_else(|| AppError::Unprocessable("kelompok tidak ada di khotmil ini".into()))?;
         if cnt >= 30 {
             return Err(AppError::Conflict("kelompok sudah penuh (30 santri)".into()));
         }
@@ -447,6 +447,7 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Op
         id: aid, campaign_id, campaign_name: name.0, juz, group_id, status: "ASSIGNED".into(),
         due_at: None, pages_read: 0, minutes_read: 0, verification: "PENDING".into(),
         current_surah: None, current_ayah: None, read_ayat: None, juz_total_ayat: total, progress_pct: None,
+        campaign_status: "SCHEDULED".into(),
     })
 }
 
@@ -455,7 +456,7 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Op
 // =====================================================================
 
 async fn assignment_out(pool: &MySqlPool, assignment_id: i64) -> Result<AssignmentOut, AppError> {
-    let r: (i64, i64, String, i64, i64, String, Option<String>, i64, i64, String, Option<i64>, Option<i64>, i64, Option<i64>) =
+    let r: (i64, i64, String, i64, i64, String, Option<String>, i64, i64, String, Option<i64>, Option<i64>, i64, Option<i64>, String) =
         sqlx::query_as(
             "SELECT a.id, a.campaign_id, c.name, a.juz, a.group_id, a.status, DATE_FORMAT(a.due_at, '%Y-%m-%dT%H:%i:%sZ'), \
              IFNULL(pg.pages_read, 0), IFNULL(pg.minutes_read, 0), IFNULL(pg.verification, 'PENDING'), \
@@ -463,7 +464,7 @@ async fn assignment_out(pool: &MySqlPool, assignment_id: i64) -> Result<Assignme
              (SELECT COUNT(*) FROM quran_ayahs qa WHERE qa.juz = a.juz), \
              CASE WHEN pg.current_surah_id IS NOT NULL THEN \
                (SELECT COUNT(*) FROM quran_ayahs qb WHERE qb.juz = a.juz AND (qb.surah_id * 1000 + qb.ayah_number) <= (pg.current_surah_id * 1000 + pg.current_ayah)) \
-             END \
+             END, c.status \
              FROM khatmil_juz_assignments a \
              JOIN khatmil_participants p ON p.id = a.participant_id \
              JOIN khatmil_campaigns c ON c.id = a.campaign_id \
@@ -476,6 +477,7 @@ async fn assignment_out(pool: &MySqlPool, assignment_id: i64) -> Result<Assignme
         pages_read: r.7, minutes_read: r.8, verification: r.9,
         current_surah: r.10, current_ayah: r.11, read_ayat: r.13, juz_total_ayat: r.12,
         progress_pct: pct(r.13.unwrap_or(0), r.12),
+        campaign_status: r.14,
     })
 }
 
@@ -500,8 +502,8 @@ pub async fn post_progress(
     let pages = req.pages_read.unwrap_or(0).clamp(0, 22);
     let minutes = req.minutes_read.unwrap_or(0).clamp(0, 1440);
 
-    let row: (i64, i64, i64, String, i64, String) = sqlx::query_as(
-        "SELECT a.id, a.campaign_id, a.juz, a.status, IFNULL(c.require_manual_verification, 0), c.name \
+    let row: (i64, i64, i64, String, i64, String, String) = sqlx::query_as(
+        "SELECT a.id, a.campaign_id, a.juz, a.status, IFNULL(c.require_manual_verification, 0), c.name, c.status \
          FROM khatmil_juz_assignments a \
          JOIN khatmil_participants p ON p.id = a.participant_id \
          JOIN khatmil_campaigns c ON c.id = a.campaign_id \
@@ -509,9 +511,14 @@ pub async fn post_progress(
         .bind(assignment_id).bind(user_id)
         .fetch_optional(pool).await.map_err(dberr)?
         .ok_or_else(|| AppError::NotFound("assignment tidak ada / bukan milik anda".into()))?;
-    let (aid, _cid, juz, status, manual, cname) = row;
+    let (aid, _cid, juz, status, manual, cname, cstatus) = row;
     if status == "COMPLETED" {
         return Err(AppError::Conflict("juz sudah COMPLETED".into()));
+    }
+    // Lapor progres hanya saat khotmil berjalan (Akan Datang: belum boleh
+    // mengaji; Selesai: sudah terkunci).
+    if cstatus != "ACTIVE" {
+        return Err(AppError::Conflict("lapor progres hanya saat khotmil berjalan".into()));
     }
 
     // validasi rentang + kalkulasi (F1.3)
@@ -559,7 +566,7 @@ pub async fn post_progress(
         sqlx::query("INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
                      VALUES (?, 'KHOTMIL_JUZ_DONE', 'Juz selesai', ?, ?, 'IN_APP')")
             .bind(user_id)
-            .bind(format!("Juz {juz} di campaign {cname} selesai — terverifikasi sistem (posisi mencapai ayat terakhir)"))
+            .bind(format!("Juz {juz} di khotmil {cname} selesai — terverifikasi sistem (posisi mencapai ayat terakhir)"))
             .bind(format!("{{\"deeplink\":\"khatmil:assignment:{aid}\",\"juz\":{juz}}}"))
             .execute(&mut *tx).await.map_err(dberr)?;
     }
@@ -579,7 +586,7 @@ pub async fn post_progress(
 // =====================================================================
 
 pub async fn my_assignments(pool: &MySqlPool, user_id: i64) -> Result<Vec<AssignmentOut>, AppError> {
-    let rows: Vec<(i64, i64, String, i64, i64, String, Option<String>, i64, i64, String, Option<i64>, Option<i64>, i64, Option<i64>)> =
+    let rows: Vec<(i64, i64, String, i64, i64, String, Option<String>, i64, i64, String, Option<i64>, Option<i64>, i64, Option<i64>, String)> =
         sqlx::query_as(
             "SELECT a.id, a.campaign_id, c.name, a.juz, a.group_id, a.status, DATE_FORMAT(a.due_at, '%Y-%m-%dT%H:%i:%sZ'), \
              IFNULL(pg.pages_read, 0), IFNULL(pg.minutes_read, 0), IFNULL(pg.verification, 'PENDING'), \
@@ -587,7 +594,7 @@ pub async fn my_assignments(pool: &MySqlPool, user_id: i64) -> Result<Vec<Assign
              (SELECT COUNT(*) FROM quran_ayahs qa WHERE qa.juz = a.juz), \
              CASE WHEN pg.current_surah_id IS NOT NULL THEN \
                (SELECT COUNT(*) FROM quran_ayahs qb WHERE qb.juz = a.juz AND (qb.surah_id * 1000 + qb.ayah_number) <= (pg.current_surah_id * 1000 + pg.current_ayah)) \
-             END \
+             END, c.status \
              FROM khatmil_juz_assignments a \
              JOIN khatmil_participants p ON p.id = a.participant_id \
              JOIN khatmil_campaigns c ON c.id = a.campaign_id \
@@ -600,7 +607,41 @@ pub async fn my_assignments(pool: &MySqlPool, user_id: i64) -> Result<Vec<Assign
         pages_read: r.7, minutes_read: r.8, verification: r.9,
         current_surah: r.10, current_ayah: r.11, read_ayat: r.13, juz_total_ayat: r.12,
         progress_pct: pct(r.13.unwrap_or(0), r.12),
+        campaign_status: r.14,
     }).collect())
+}
+
+/// Peserta melepas juz yang dipegang (keputusan produk 2026-10-18 #4):
+/// status jadi CANCELLED → active_marker NULL → juz kembali kosong di peta
+/// dan bisa diklaim orang lain. Dibolehkan selama khotmil belum Selesai.
+pub async fn cancel_assignment(pool: &MySqlPool, user_id: i64, assignment_id: i64) -> Result<(), AppError> {
+    // UPDATE terjaga: hanya pemilik, juz belum tuntas, khotmil belum selesai.
+    let res = sqlx::query(
+        "UPDATE khatmil_juz_assignments a \
+         JOIN khatmil_participants p ON p.id = a.participant_id \
+         JOIN khatmil_campaigns c ON c.id = a.campaign_id \
+         SET a.status = 'CANCELLED' \
+         WHERE a.id = ? AND p.user_id = ? AND a.status <> 'COMPLETED' AND c.status <> 'COMPLETED'")
+        .bind(assignment_id).bind(user_id)
+        .execute(pool).await.map_err(dberr)?;
+    if res.rows_affected() == 0 {
+        let owned: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM khatmil_juz_assignments a \
+             WHERE a.id = ? AND EXISTS(SELECT 1 FROM khatmil_participants p WHERE p.id = a.participant_id AND p.user_id = ?)")
+            .bind(assignment_id).bind(user_id)
+            .fetch_optional(pool).await.map_err(dberr)?;
+        if owned.is_none() {
+            return Err(AppError::NotFound("juz tidak ada / bukan milik anda".into()));
+        }
+        let done: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM khatmil_juz_assignments a WHERE a.id = ? AND a.status = 'COMPLETED'")
+            .bind(assignment_id).fetch_optional(pool).await.map_err(dberr)?;
+        if done.is_some() {
+            return Err(AppError::Conflict("juz sudah tuntas — tidak bisa dibatalkan".into()));
+        }
+        return Err(AppError::Conflict("khotmil sudah selesai — juz tidak bisa dibatalkan".into()));
+    }
+    Ok(())
 }
 
 // =====================================================================
@@ -608,17 +649,22 @@ pub async fn my_assignments(pool: &MySqlPool, user_id: i64) -> Result<Vec<Assign
 // =====================================================================
 
 pub async fn participants(pool: &MySqlPool, campaign_id: i64) -> Result<Vec<ParticipantOut>, AppError> {
-    let (target,): (i64,) = sqlx::query_as("SELECT target_khataman FROM khatmil_campaigns WHERE id = ?")
+    let (target, period_start): (i64, Option<String>) = sqlx::query_as(
+        "SELECT target_khataman, DATE_FORMAT(period_start, '%Y-%m-%d') FROM khatmil_campaigns WHERE id = ?")
         .bind(campaign_id).fetch_optional(pool).await.map_err(dberr)?
-        .ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
+        .ok_or_else(|| AppError::NotFound("khotmil tidak ada".into()))?;
 
     // agregat per peserta (GROUP BY participant — join events hanya utk last_reported)
-    let agg: Vec<(i64, String, String, i64, i64, i64, Option<String>)> = sqlx::query_as(
+    // ayat_dibaca = posisi bacaan tiap assignment dikonversi ke jumlah ayat juz tsb.
+    let agg: Vec<(i64, String, String, i64, i64, i64, Option<String>, i64)> = sqlx::query_as(
         "SELECT p.user_id, IFNULL(up.full_name, 'Tanpa nama'), DATE_FORMAT(p.joined_at, '%Y-%m-%dT%H:%i:%sZ'), \
          CAST(IFNULL(SUM(a.status = 'COMPLETED'), 0) AS SIGNED), \
          CAST(IFNULL(SUM(a.status IN ('ASSIGNED','IN_PROGRESS')), 0) AS SIGNED), \
          CAST(IFNULL(SUM(CASE WHEN a.status = 'COMPLETED' THEN IFNULL(pg.minutes_read, 0) ELSE 0 END), 0) AS SIGNED), \
-         DATE_FORMAT((SELECT MAX(e.recorded_at) FROM khatmil_progress_events e JOIN khatmil_juz_assignments a2 ON a2.id = e.assignment_id WHERE a2.participant_id = p.id), '%Y-%m-%dT%H:%i:%sZ') \
+         DATE_FORMAT((SELECT MAX(e.recorded_at) FROM khatmil_progress_events e JOIN khatmil_juz_assignments a2 ON a2.id = e.assignment_id WHERE a2.participant_id = p.id), '%Y-%m-%dT%H:%i:%sZ'), \
+         CAST(IFNULL(SUM(CASE WHEN pg.current_surah_id IS NOT NULL THEN \
+           (SELECT COUNT(*) FROM quran_ayahs qb WHERE qb.juz = a.juz AND (qb.surah_id * 1000 + qb.ayah_number) <= (pg.current_surah_id * 1000 + pg.current_ayah)) \
+         END), 0) AS SIGNED) \
          FROM khatmil_participants p \
          LEFT JOIN user_profiles up ON up.user_id = p.user_id \
          LEFT JOIN khatmil_juz_assignments a ON a.participant_id = p.id \
@@ -659,8 +705,16 @@ pub async fn participants(pool: &MySqlPool, campaign_id: i64) -> Result<Vec<Part
         by_user.entry(uid).or_default().push((juz, status, cs, ca, last, off, total));
     }
 
+    // Kecepatan = ayat dibaca per hari sejak mulai khotmil (min. dihitung 1 hari).
+    let start_date = period_start
+        .as_deref()
+        .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+    let days = start_date
+        .map(|d| (chrono::Utc::now().date_naive() - d).num_days().max(1))
+        .unwrap_or(1);
+
     let mut out = Vec::with_capacity(agg.len());
-    for (uid, full_name, joined, done_cnt, act_cnt, minutes_total, last_reported) in agg {
+    for (uid, full_name, joined, done_cnt, act_cnt, minutes_total, last_reported, ayat_read) in agg {
         let mut juz_active = Vec::new();
         let mut juz_done = Vec::new();
         if let Some(list) = by_user.get(&uid) {
@@ -687,9 +741,17 @@ pub async fn participants(pool: &MySqlPool, campaign_id: i64) -> Result<Vec<Part
             task_progress_pct: if held > 0 { pct(done_cnt, held) } else { None },
             contribution_pct: if target > 0 { pct(done_cnt, 30 * target) } else { None },
             last_reported_at: last_reported,
+            ayat_read,
+            ayat_per_day: (ayat_read as f64 / days as f64 * 10.0).round() / 10.0,
         });
     }
-    out.sort_by(|a, b| b.juz_done_count.cmp(&a.juz_done_count).then_with(|| a.full_name.cmp(&b.full_name)));
+    // Peringkat = banyak ayat dibaca, tiebreak kecepatan (ayat/hari), lalu nama.
+    out.sort_by(|a, b| {
+        b.ayat_read
+            .cmp(&a.ayat_read)
+            .then_with(|| b.ayat_per_day.partial_cmp(&a.ayat_per_day).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.full_name.cmp(&b.full_name))
+    });
     Ok(out)
 }
 
@@ -763,7 +825,7 @@ pub async fn job_stale_reminder(pool: &MySqlPool) -> Result<u64, AppError> {
         sqlx::query("INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
                      VALUES (?, 'KHATMIL_JUZ_STALE', 'Pengingat Juz', ?, ?, 'IN_APP')")
             .bind(uid)
-            .bind(format!("Juz {juz} di campaign {cname} belum selesai — yuk lanjutkan bacaannya"))
+            .bind(format!("Juz {juz} di khotmil {cname} belum selesai — yuk lanjutkan bacaannya"))
             .bind(format!("{{\"deeplink\":\"khatmil:assignment:{aid}\",\"assignment_id\":{aid},\"juz\":{juz}}}"))
             .execute(pool).await.map_err(dberr)?;
         sent += 1;

@@ -90,6 +90,13 @@ pub async fn my_assignments(cu: CurrentUser, State(st): State<AppState>) -> Resu
     Ok(ok(svc::my_assignments(&st.pool, cu.user_id).await?, StatusCode::OK))
 }
 
+/// Peserta melepas juz yang dipegang — juz kembali kosong di peta.
+pub async fn cancel_assignment(cu: CurrentUser, State(st): State<AppState>, Path(id): Path<i64>) -> Result<Response, AppError> {
+    cu.require("khatmil.join")?;
+    svc::cancel_assignment(&st.pool, cu.user_id, id).await?;
+    Ok(ok(json!({ "cancelled": true }), StatusCode::OK))
+}
+
 // ===================== penugasan pembina (rev khatmil v2) =====================
 
 pub async fn ustadz_khatmil_overview(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {

@@ -137,6 +137,10 @@ pub struct AssignmentOut {
     pub read_ayat: Option<i64>,
     pub juz_total_ayat: i64,
     pub progress_pct: Option<f64>,
+    /// Status khotmil asal assignment (ACTIVE/SCHEDULED) — untuk gating
+    /// tombol Baca/Lapor di app.
+    #[serde(default)]
+    pub campaign_status: String,
 }
 
 /// ProgressReq v2 (rev 3.3 — KEPUTUSAN OPSI B):
@@ -186,6 +190,12 @@ pub struct ParticipantOut {
     pub task_progress_pct: Option<f64>, // done/(done+active); None bila belum pegang juz
     pub contribution_pct: Option<f64>,  // done/(30*target); None bila target 0
     pub last_reported_at: Option<String>,
+    /// Total ayat yang terbaca (dari posisi bacaan seluruh juz yang dipegang)
+    /// — metrik peringkat utama.
+    pub ayat_read: i64,
+    /// Kecepatan = ayat dibaca per hari sejak khotmil mulai — tiebreak
+    /// peringkat.
+    pub ayat_per_day: f64,
 }
 
 #[derive(Debug, Serialize)]

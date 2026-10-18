@@ -18,6 +18,7 @@ pub fn routes() -> Router<AppState> {
         .route("/khatmil/campaigns/{id}/participants", get(handler::participants))
         .route("/khatmil/campaigns/{id}/activity", get(handler::activity))
         .route("/khatmil/assignments/{id}/progress", post(handler::post_progress))
+        .route("/khatmil/assignments/{id}/cancel", post(handler::cancel_assignment))
         .route("/me/khatmil/assignments", get(handler::my_assignments))
         .route("/ustadz/khatmil", get(handler::ustadz_khatmil_overview))
         .route("/ustadz/khatmil/{id}", get(handler::ustadz_group_progress))
