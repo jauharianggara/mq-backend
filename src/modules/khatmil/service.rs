@@ -395,6 +395,16 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Op
         .fetch_optional(pool).await.map_err(dberr)?
         .ok_or_else(|| AppError::Unprocessable("ikut khotmil dulu sebelum klaim juz".into()))?;
 
+    // Aturan berurutan: masih punya juz aktif? Selesaikan dulu — juz baru terkunci.
+    let held: Vec<(i64,)> = sqlx::query_as(
+        "SELECT juz FROM khatmil_juz_assignments WHERE campaign_id = ? AND participant_id = ? \
+         AND status IN ('ASSIGNED','IN_PROGRESS') ORDER BY juz")
+        .bind(campaign_id).bind(participant.0).fetch_all(pool).await.map_err(dberr)?;
+    if let Some((held_juz,)) = held.first() {
+        return Err(AppError::Conflict(format!(
+            "Selesaikan Juz {held_juz} dulu sebelum mengambil juz baru")));
+    }
+
     // Keputusan produk 2026-10-18: satu santri BOLEH memegang beberapa juz —
     // check "satu santri satu juz" dihapus. Unik per juz tetap dijamin
     // khatmil_juz_active_uq (campaign_id, juz, active_marker).
@@ -502,8 +512,8 @@ pub async fn post_progress(
     let pages = req.pages_read.unwrap_or(0).clamp(0, 22);
     let minutes = req.minutes_read.unwrap_or(0).clamp(0, 1440);
 
-    let row: (i64, i64, i64, String, i64, String, String) = sqlx::query_as(
-        "SELECT a.id, a.campaign_id, a.juz, a.status, IFNULL(c.require_manual_verification, 0), c.name, c.status \
+    let row: (i64, i64, i64, i64, String, i64, String, String) = sqlx::query_as(
+        "SELECT a.id, a.campaign_id, a.participant_id, a.juz, a.status, IFNULL(c.require_manual_verification, 0), c.name, c.status \
          FROM khatmil_juz_assignments a \
          JOIN khatmil_participants p ON p.id = a.participant_id \
          JOIN khatmil_campaigns c ON c.id = a.campaign_id \
@@ -511,7 +521,7 @@ pub async fn post_progress(
         .bind(assignment_id).bind(user_id)
         .fetch_optional(pool).await.map_err(dberr)?
         .ok_or_else(|| AppError::NotFound("assignment tidak ada / bukan milik anda".into()))?;
-    let (aid, _cid, juz, status, manual, cname, cstatus) = row;
+    let (aid, _cid, pid, juz, status, manual, cname, cstatus) = row;
     if status == "COMPLETED" {
         return Err(AppError::Conflict("juz sudah COMPLETED".into()));
     }
@@ -519,6 +529,16 @@ pub async fn post_progress(
     // mengaji; Selesai: sudah terkunci).
     if cstatus != "ACTIVE" {
         return Err(AppError::Conflict("lapor progres hanya saat khotmil berjalan".into()));
+    }
+    // Bacaan berurutan: assignment ini harus juz aktif TERENDAH milik peserta.
+    // (juz lebih rendah yang sudah CANCELLED/COMPLETED tidak menghalangi.)
+    let lower: Vec<(i64,)> = sqlx::query_as(
+        "SELECT juz FROM khatmil_juz_assignments WHERE campaign_id = ? AND participant_id = ? \
+         AND status IN ('ASSIGNED','IN_PROGRESS') AND juz < ? ORDER BY juz")
+        .bind(_cid).bind(pid).bind(juz).fetch_all(pool).await.map_err(dberr)?;
+    if let Some((lower_juz,)) = lower.first() {
+        return Err(AppError::Conflict(format!(
+            "Selesaikan Juz {lower_juz} dulu — bacaan berurutan")));
     }
 
     // validasi rentang + kalkulasi (F1.3)
