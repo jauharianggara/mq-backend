@@ -385,8 +385,9 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Op
         "SELECT status, min_minutes_per_juz FROM khatmil_campaigns WHERE id = ?")
         .bind(campaign_id).fetch_optional(pool).await.map_err(dberr)?
         .ok_or_else(|| AppError::NotFound("campaign tidak ada".into()))?;
-    if status != "ACTIVE" {
-        return Err(AppError::Conflict(format!("campaign berstatus {status}")));
+    if status != "SCHEDULED" {
+        return Err(AppError::Conflict(format!(
+            "campaign berstatus {status} — klaim juz hanya saat belum dimulai (SCHEDULED)")));
     }
     let participant: (i64,) = sqlx::query_as(
         "SELECT id FROM khatmil_participants WHERE campaign_id = ? AND user_id = ?")
