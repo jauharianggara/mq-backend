@@ -45,6 +45,7 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/ustadz/{id}", get(ustadz_detail))
         .route("/admin/ustadz/{id}/verify", post(ustadz_verify))
         .route("/admin/users/{id}", patch(users_patch))
+        .route("/admin/notifications", get(notifications_history).post(notifications_send))
 }
 
 async fn dashboard(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
@@ -103,6 +104,10 @@ async fn settings_list(cu: CurrentUser, State(st): State<AppState>) -> Result<Re
 
 async fn settings_put(cu: CurrentUser, State(st): State<AppState>, Path(key): Path<String>, Json(body): Json<serde_json::Value>) -> Result<Response, AppError> {
     cu.require("settings.manage")?;
+    // Config pembagian income divalidasi ketat — config rusak di fallback diam-diam.
+    if key == "visit_income_split" {
+        crate::modules::visits::payments::validate_income_split_value(&body)?;
+    }
     let raw = body.to_string();
     let n = sqlx::query("INSERT INTO settings (`key`, value, updated_by) VALUES (?, ?, ?) \
                          ON DUPLICATE KEY UPDATE value = ?, updated_by = VALUES(updated_by), updated_at = CURRENT_TIMESTAMP")
@@ -601,4 +606,127 @@ async fn admin_count(cu: CurrentUser, State(st): State<AppState>, Query(q): Quer
         _ => return Err(AppError::Unprocessable("entity tidak dikenal (visits|payments|payouts|reviews)".into())),
     };
     Ok(ok(json!({ "total": total }), StatusCode::OK))
+}
+
+#[derive(serde::Deserialize)]
+struct NotifSendReq {
+    /// "all" | "role" | "user"
+    target: String,
+    /// kode role utk target=role (lihat tabel `roles`)
+    role: Option<String>,
+    /// id pengguna utk target=user
+    user_id: Option<i64>,
+    title: String,
+    body: String,
+    /// deeplink opsional, mis. "khatmil:campaign:3" — diteruskan ke app (data.deeplink)
+    deeplink: Option<String>,
+}
+
+/// Kirim notifikasi IN_APP: fan-out langsung ke `user_notifications`
+/// (channel PUSH/FCM menyusul). Semua kirim tercatat di audit_logs.
+async fn notifications_send(
+    cu: CurrentUser,
+    State(st): State<AppState>,
+    Json(req): Json<NotifSendReq>,
+) -> Result<Response, AppError> {
+    cu.require("notifications.send")?;
+    let title = req.title.trim();
+    let text = req.body.trim();
+    if title.is_empty() || title.chars().count() > 200 {
+        return Err(AppError::Unprocessable("judul wajib 1-200 karakter".into()));
+    }
+    if text.is_empty() || text.chars().count() > 2000 {
+        return Err(AppError::Unprocessable("isi wajib 1-2000 karakter".into()));
+    }
+    let data = match req.deeplink.as_deref().map(str::trim) {
+        Some(d) if !d.is_empty() => json!({ "deeplink": d }),
+        _ => json!({}),
+    };
+    let data_str = data.to_string();
+
+    let recipients: u64 = match req.target.as_str() {
+        "all" => {
+            let r = sqlx::query(
+                "INSERT INTO user_notifications (user_id, title, body, channel, data) \
+                 SELECT id, ?, ?, 'IN_APP', ? FROM users WHERE status = 'ACTIVE'")
+                .bind(title).bind(text).bind(&data_str)
+                .execute(&st.pool).await.map_err(dberr)?;
+            r.rows_affected()
+        }
+        "role" => {
+            let role = req.role.as_deref().map(str::trim).unwrap_or("");
+            let known: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM roles WHERE code = ?")
+                .bind(role).fetch_one(&st.pool).await.map_err(dberr)?;
+            if known.0 == 0 {
+                return Err(AppError::Unprocessable(format!("role tidak dikenal: {role}")));
+            }
+            let r = sqlx::query(
+                "INSERT INTO user_notifications (user_id, title, body, channel, data) \
+                 SELECT u.id, ?, ?, 'IN_APP', ? FROM users u \
+                 JOIN user_roles ur ON ur.user_id = u.id \
+                 JOIN roles r ON r.id = ur.role_id \
+                 WHERE u.status = 'ACTIVE' AND r.code = ?")
+                .bind(title).bind(text).bind(&data_str).bind(role)
+                .execute(&st.pool).await.map_err(dberr)?;
+            r.rows_affected()
+        }
+        "user" => {
+            let uid = req.user_id
+                .ok_or_else(|| AppError::Unprocessable("user_id wajib utk target=user".into()))?;
+            let exists: (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM users WHERE id = ? AND status = 'ACTIVE'")
+                .bind(uid).fetch_one(&st.pool).await.map_err(dberr)?;
+            if exists.0 == 0 {
+                return Err(AppError::NotFound("pengguna aktif tidak ditemukan".into()));
+            }
+            sqlx::query(
+                "INSERT INTO user_notifications (user_id, title, body, channel, data) \
+                 VALUES (?, ?, ?, 'IN_APP', ?)")
+                .bind(uid).bind(title).bind(text).bind(&data_str)
+                .execute(&st.pool).await.map_err(dberr)?;
+            1
+        }
+        _ => return Err(AppError::Unprocessable("target tidak valid (all|role|user)".into())),
+    };
+
+    let _ = sqlx::query(
+        "INSERT INTO audit_logs (actor_id, action, module, entity_type, entity_id, new_value) \
+         VALUES (?, 'CREATE', 'notifications', 'broadcast', NULL, ?)")
+        .bind(cu.user_id)
+        .bind(json!({
+            "target": req.target, "role": req.role, "user_id": req.user_id,
+            "title": title, "recipients": recipients
+        }).to_string())
+        .execute(&st.pool).await;
+
+    Ok(ok(json!({ "recipients": recipients }), StatusCode::CREATED))
+}
+
+/// Riwayat kirim (20 terakhir) — sumber: audit_logs module=notifications.
+async fn notifications_history(
+    cu: CurrentUser,
+    State(st): State<AppState>,
+) -> Result<Response, AppError> {
+    cu.require("notifications.send")?;
+    let rows: Vec<(i64, Option<String>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT a.id, COALESCE(NULLIF(up.full_name, ''), u.email), a.entity_id, \
+         CAST(a.new_value AS CHAR), DATE_FORMAT(a.created_at, '%Y-%m-%dT%H:%i:%sZ') \
+         FROM audit_logs a \
+         LEFT JOIN users u ON u.id = a.actor_id \
+         LEFT JOIN user_profiles up ON up.user_id = a.actor_id \
+         WHERE a.module = 'notifications' ORDER BY a.id DESC LIMIT 20")
+        .fetch_all(&st.pool).await.map_err(dberr)?;
+    let items: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            let detail: serde_json::Value = serde_json::from_str(r.3.as_deref().unwrap_or("{}"))
+                .unwrap_or(json!({}));
+            json!({
+                "id": r.0, "actor": r.1,
+                "target_user_id": r.2.as_deref().and_then(|s| s.parse::<i64>().ok()),
+                "detail": detail, "created_at": r.4,
+            })
+        })
+        .collect();
+    Ok(ok(items, StatusCode::OK))
 }

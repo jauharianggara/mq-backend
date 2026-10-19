@@ -142,6 +142,11 @@ taskkill /F /IM mq-backend.exe; sleep 2
 # start-mq-stack.bat akan restart semua
 ```
 
+## Pembagian income Panggil Ustadz (fee infaq — dinamis)
+- Setting `visit_income_split` (tabel `settings`, diubah admin via `PUT /admin/settings/{key}`, permission `settings.manage`) — **tanpa deploy/restart**, berlaku di transaksi kunjungan berikutnya.
+- Format: `[{"to":"USTADZ","pct":80},{"to":"PLATFORM","pct":20}]` — `to` = `USTADZ` (wallet ustadz kunjungan) | `USER` (+`user_id`, masuk wallet user itu) | `PLATFORM` (ditahan pengelola, tidak masuk wallet). Total `pct` wajib 100; server menolak PUT tidak valid (422).
+- Banyak penerima/porsi bebas; pembulatan rupiah: floor per porsi, sisa ke porsi pertama. Config hilang/tidak valid → fallback default 80/20 + warning di log.
+
 ## Media via tunnel (22Sep)
 - SeaweedFS S3 (port 9000) di-expose via tunnel **mq-media.jagodigital.online** (ingress + `originRequest.httpHostHeader: mq-media.jagodigital.online` — WAJIB; tanpa ini Host di-rewrite jadi localhost:9000 dan signature S3 403).
 - `.env` S3_ENDPOINT = `https://mq-media.jagodigital.online` — presign URL (foto profil + cover khatmil) HARUS host publik ini agar bisa di-fetch device/browser.

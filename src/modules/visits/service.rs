@@ -1049,7 +1049,7 @@ pub async fn complete_visit(state: &AppState, ustadz_user_id: i64, visit_id: i64
         &format!("Kunjungan {} selesai. Beri rating & catatan utk santri (privat).", v.scheduled_at), &visit_id.to_string()).await?;
     tx.commit().await.map_err(dberr)?;
     // penghasilan ustadz masuk saldo otomatis
-    payments::earn_visit_income(state, visit_id, v.ustadz_id).await?;
+    payments::earn_visit_income(&state.pool, visit_id, v.ustadz_id).await?;
     let v2 = fetch_visit(&state.pool, visit_id).await?.unwrap();
     Ok(visit_out(&state.pool, &v2, Some(ustadz_user_id)).await?)
 }
@@ -1110,7 +1110,7 @@ pub async fn admin_force_complete(state: &AppState, admin_id: i64, visit_id: i64
         notify(&mut *tx, v.user_id, "KHATMIL_ASSIGN_RESULT", "Kunjungan selesai (admin)",
             &format!("Kunjungan {} ditandai selesai oleh admin.", v.scheduled_at), &visit_id.to_string()).await?;
         tx.commit().await.map_err(dberr)?;
-        payments::earn_visit_income(state, visit_id, v.ustadz_id).await?;
+        payments::earn_visit_income(&state.pool, visit_id, v.ustadz_id).await?;
     }
     let v2 = fetch_visit(&state.pool, visit_id).await?.unwrap();
     Ok(visit_out(&state.pool, &v2, None).await?)

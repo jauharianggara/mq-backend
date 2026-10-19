@@ -2,7 +2,7 @@
 //! refund ke deposit santri, penghasilan ustadz, payout & worker jobs.
 use sqlx::MySqlPool;
 
-use crate::modules::visits::service::{dberr, log_history, notify, notify_admins, setting_i64};
+use crate::modules::visits::service::{dberr, log_history, notify, notify_admins, setting_i64, setting_str};
 use crate::shared::error::AppError;
 use crate::state::AppState;
 
@@ -211,21 +211,158 @@ pub async fn refund_visit_to_deposit(state: &AppState, visit_id: i64, reason: &s
     Ok(())
 }
 
-/// Penghasilan ustadz masuk saldo saat kunjungan COMPLETED.
-pub async fn earn_visit_income(state: &AppState, visit_id: i64, ustadz_id: i64) -> Result<(), AppError> {
+// ===================== pembagian income (fee infaq — dinamis) =====================
+
+/// Default pembagian income kunjungan: ustadz 80%, fee infaq 20% ditahan
+/// pengelola aplikasi (PLATFORM = tidak masuk wallet siapa pun).
+/// Diubah admin tanpa deploy via `PUT /admin/settings/visit_income_split`.
+pub const DEFAULT_INCOME_SPLIT: &str =
+    r#"[{"to":"USTADZ","pct":80},{"to":"PLATFORM","pct":20}]"#;
+
+/// Target satu porsi pembagian income.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplitTo {
+    /// Wallet ustadz pemilik kunjungan.
+    Ustadz,
+    /// Wallet user tertentu (mis. pengelola / yayasan) — wajib sertakan `user_id`.
+    User(i64),
+    /// Ditahan aplikasi (fee infaq) — tidak masuk wallet siapa pun.
+    Platform,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitEntry {
+    pub to: SplitTo,
+    /// Porsi dalam persen (0-100); total semua entri wajib 100.
+    pub pct: i64,
+}
+
+/// Parse + validasi config pembagian dari settings. `None` = tidak valid.
+///
+/// Format: `[{"to":"USTADZ","pct":80},{"to":"PLATFORM","pct":20}]` — `to` juga
+/// bisa `"USER"` dengan `"user_id": <id>` untuk memasukkan porsi ke wallet user.
+pub fn parse_income_split(raw: &str) -> Option<Vec<SplitEntry>> {
+    let arr: Vec<serde_json::Value> = serde_json::from_str(raw).ok()?;
+    if arr.is_empty() { return None; }
+    let mut out = Vec::with_capacity(arr.len());
+    let mut total = 0i64;
+    for v in &arr {
+        let to = match v.get("to").and_then(|t| t.as_str())? {
+            "USTADZ" => SplitTo::Ustadz,
+            "USER" => SplitTo::User(v.get("user_id").and_then(|u| u.as_i64()).filter(|id| *id >= 1)?),
+            "PLATFORM" => SplitTo::Platform,
+            _ => return None,
+        };
+        let pct = v.get("pct").and_then(|p| p.as_i64())?;
+        if !(0..=100).contains(&pct) { return None; }
+        total += pct;
+        out.push(SplitEntry { to, pct });
+    }
+    (total == 100).then_some(out)
+}
+
+/// Validasi utk admin `PUT /admin/settings/visit_income_split` → 422 bila tidak valid.
+pub fn validate_income_split_value(v: &serde_json::Value) -> Result<(), AppError> {
+    parse_income_split(&v.to_string()).map(|_| ()).ok_or_else(|| {
+        AppError::Unprocessable(
+            "visit_income_split tidak valid: array JSON [{\"to\":\"USTADZ\"|\"USER\"|\"PLATFORM\",\"pct\":0-100,\"user_id\":?}] — total pct wajib 100".into())
+    })
+}
+
+/// Config aktif: settings `visit_income_split`, fallback default 80/20 bila
+/// belum ada / tidak valid (deploy prod tidak menjalankan ulang seed).
+async fn income_split(pool: &MySqlPool) -> Vec<SplitEntry> {
+    let raw = setting_str(pool, "visit_income_split")
+        .await
+        .unwrap_or_else(|| DEFAULT_INCOME_SPLIT.to_string());
+    match parse_income_split(&raw) {
+        Some(s) => s,
+        None => {
+            tracing::warn!("visit_income_split tidak valid ({raw}) — pakai default {DEFAULT_INCOME_SPLIT}");
+            parse_income_split(DEFAULT_INCOME_SPLIT).expect("default split valid")
+        }
+    }
+}
+
+/// Pembagian income kunjungan (fee infaq) saat kunjungan COMPLETED — porsi &
+/// jumlah penerima dinamis dari settings `visit_income_split`. Idempoten per
+/// penerima (cek wallet_transactions EARNING per user per visit).
+pub async fn earn_visit_income(pool: &MySqlPool, visit_id: i64, ustadz_id: i64) -> Result<(), AppError> {
+    let split = income_split(pool).await;
     let rows: Vec<(i64, i64)> = sqlx::query_as(
         "SELECT id, amount FROM payments \
          WHERE subject_type = 'ustadz_visit' AND subject_id = ? AND status = 'PAID'")
-        .bind(visit_id).fetch_all(&state.pool).await.map_err(dberr)?;
+        .bind(visit_id).fetch_all(pool).await.map_err(dberr)?;
     for (pid, amount) in rows {
-        let sudah: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM wallet_transactions \
-             WHERE user_id = ? AND tx_type = 'EARNING' AND subject_type = 'ustadz_visit' AND subject_id = ?")
-            .bind(ustadz_id).bind(visit_id).fetch_one(&state.pool).await.map_err(dberr)?;
-        if sudah > 0 { continue; }
-        crate::modules::wallet::service::credit(&state.pool, ustadz_id, amount, "EARNING", "ustadz_visit", visit_id).await?;
+        // Floor per porsi; sisa pembulatan ke porsi pertama agar total pas = amount.
+        let mut shares: Vec<(SplitTo, i64)> =
+            split.iter().map(|e| (e.to.clone(), amount * e.pct / 100)).collect();
+        let terbagi: i64 = shares.iter().map(|(_, s)| *s).sum();
+        if let Some(first) = shares.first_mut() {
+            first.1 += amount - terbagi;
+        }
+        for (to, share) in shares {
+            let user_id = match to {
+                SplitTo::Ustadz => ustadz_id,
+                SplitTo::User(uid) => uid,
+                SplitTo::Platform => continue, // fee infaq ditahan pengelola aplikasi
+            };
+            if share <= 0 { continue; } // wallet_transactions: CHECK amount > 0
+            let sudah: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM wallet_transactions \
+                 WHERE user_id = ? AND tx_type = 'EARNING' AND subject_type = 'ustadz_visit' AND subject_id = ?")
+                .bind(user_id).bind(visit_id).fetch_one(pool).await.map_err(dberr)?;
+            if sudah > 0 { continue; }
+            crate::modules::wallet::service::credit(pool, user_id, share, "EARNING", "ustadz_visit", visit_id).await?;
+            tracing::info!("income visit {visit_id} payment {pid}: credit Rp {share} ke user {user_id} (split dinamis)");
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    #[test]
+    fn parse_default_dan_config_lengkap() {
+        let d = parse_income_split(r#"[{"to":"USTADZ","pct":80},{"to":"PLATFORM","pct":20}]"#).unwrap();
+        assert_eq!(d, vec![
+            SplitEntry { to: SplitTo::Ustadz, pct: 80 },
+            SplitEntry { to: SplitTo::Platform, pct: 20 },
+        ]);
+        let u = parse_income_split(r#"[{"to":"USTADZ","pct":60},{"to":"USER","user_id":52,"pct":25},{"to":"PLATFORM","pct":15}]"#).unwrap();
+        assert_eq!(u[1].to, SplitTo::User(52));
+    }
+
+    #[test]
+    fn parse_tolak_config_tidak_valid() {
+        // total != 100
+        assert!(parse_income_split(r#"[{"to":"USTADZ","pct":90},{"to":"PLATFORM","pct":20}]"#).is_none());
+        // pct negatif / >100
+        assert!(parse_income_split(r#"[{"to":"USTADZ","pct":-20},{"to":"PLATFORM","pct":120}]"#).is_none());
+        // USER tanpa user_id
+        assert!(parse_income_split(r#"[{"to":"USTADZ","pct":80},{"to":"USER","pct":20}]"#).is_none());
+        // to tak dikenal, array kosong, bukan array
+        assert!(parse_income_split(r#"[{"to":"YAYASAN","pct":100}]"#).is_none());
+        assert!(parse_income_split("[]").is_none());
+        assert!(parse_income_split(r#""bukan array""#).is_none());
+        // pct desimal ditolak
+        assert!(parse_income_split(r#"[{"to":"USTADZ","pct":80.5},{"to":"PLATFORM","pct":19.5}]"#).is_none());
+    }
+
+    #[test]
+    fn pembulatan_sisa_ke_porsi_pertama_total_tetap_pas() {
+        // amount 10001, 80/20 → floor 8000+2000, sisa 1 ke porsi pertama
+        let split = parse_income_split(DEFAULT_INCOME_SPLIT).unwrap();
+        let amount = 10_001i64;
+        let mut shares: Vec<(SplitTo, i64)> =
+            split.iter().map(|e| (e.to.clone(), amount * e.pct / 100)).collect();
+        let terbagi: i64 = shares.iter().map(|(_, s)| *s).sum();
+        shares.first_mut().unwrap().1 += amount - terbagi;
+        assert_eq!(shares, vec![(SplitTo::Ustadz, 8001), (SplitTo::Platform, 2000)]);
+        assert_eq!(shares.iter().map(|(_, s)| *s).sum::<i64>(), amount);
+    }
 }
 
 // ===================== worker jobs =====================
