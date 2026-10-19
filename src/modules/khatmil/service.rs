@@ -395,14 +395,18 @@ pub async fn claim(pool: &MySqlPool, user_id: i64, campaign_id: i64, juz_req: Op
         .fetch_optional(pool).await.map_err(dberr)?
         .ok_or_else(|| AppError::Unprocessable("ikut khotmil dulu sebelum klaim juz".into()))?;
 
-    // Aturan berurutan: masih punya juz aktif? Selesaikan dulu — juz baru terkunci.
-    let held: Vec<(i64,)> = sqlx::query_as(
-        "SELECT juz FROM khatmil_juz_assignments WHERE campaign_id = ? AND participant_id = ? \
-         AND status IN ('ASSIGNED','IN_PROGRESS') ORDER BY juz")
-        .bind(campaign_id).bind(participant.0).fetch_all(pool).await.map_err(dberr)?;
-    if let Some((held_juz,)) = held.first() {
-        return Err(AppError::Conflict(format!(
-            "Selesaikan Juz {held_juz} dulu sebelum mengambil juz baru")));
+    // Aturan berurutan HANYA saat khotmil Berlangsung (ACTIVE): juz aktif
+    // belum tuntas → juz baru terkunci. Akan Datang (SCHEDULED): klaim bebas
+    // multi-juz, juz mana pun (model fase — keputusan produk 2026-10-18).
+    if status == "ACTIVE" {
+        let held: Vec<(i64,)> = sqlx::query_as(
+            "SELECT juz FROM khatmil_juz_assignments WHERE campaign_id = ? AND participant_id = ? \
+             AND status IN ('ASSIGNED','IN_PROGRESS') ORDER BY juz")
+            .bind(campaign_id).bind(participant.0).fetch_all(pool).await.map_err(dberr)?;
+        if let Some((held_juz,)) = held.first() {
+            return Err(AppError::Conflict(format!(
+                "Selesaikan Juz {held_juz} dulu sebelum mengambil juz baru")));
+        }
     }
 
     // Keputusan produk 2026-10-18: satu santri BOLEH memegang beberapa juz —
