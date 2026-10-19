@@ -45,6 +45,8 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/ustadz/{id}", get(ustadz_detail))
         .route("/admin/ustadz/{id}/verify", post(ustadz_verify))
         .route("/admin/users/{id}", patch(users_patch))
+        // ---- penerima infaq ----
+        .route("/admin/penerima", post(penerima_create))
         .route("/admin/notifications", get(notifications_history).post(notifications_send))
 }
 
@@ -118,6 +120,70 @@ async fn settings_put(cu: CurrentUser, State(st): State<AppState>, Path(key): Pa
                          VALUES (?, 'UPDATE', 'settings', 'settings', ?, ?)")
         .bind(cu.user_id).bind(&key).bind(&raw).execute(&st.pool).await;
     Ok(ok(json!({ "updated": true, "key": key }), StatusCode::OK))
+}
+
+// ===================== penerima infaq =====================
+
+#[derive(serde::Deserialize)]
+pub struct PenerimaCreateReq {
+    pub full_name: String,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    /// Kosongkan → password acak (dikembalikan sekali di respons utk disetorkan).
+    pub password: Option<String>,
+}
+
+async fn penerima_create(cu: CurrentUser, State(st): State<AppState>, Json(body): Json<serde_json::Value>) -> Result<Response, AppError> {
+    cu.require("users.manage")?;
+    let req: PenerimaCreateReq = serde_json::from_value(body).map_err(|e| AppError::Unprocessable(format!("body tidak valid: {e}")))?;
+    let nama = req.full_name.trim();
+    if nama.is_empty() {
+        return Err(AppError::Unprocessable("nama wajib diisi".into()));
+    }
+    let email = req.email.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let phone = req.phone.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if email.is_none() && phone.is_none() {
+        return Err(AppError::Unprocessable("email atau nomor HP wajib salah satu".into()));
+    }
+    if let Some(e) = email {
+        let (ada,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE email = ?")
+            .bind(e).fetch_one(&st.pool).await.map_err(dberr)?;
+        if ada > 0 {
+            return Err(AppError::Unprocessable("email sudah terdaftar".into()));
+        }
+    }
+    let generated = req.password.as_deref().map(str::trim).filter(|p| !p.is_empty()).is_none();
+    let password = match req.password.as_deref().map(str::trim) {
+        Some(p) if !p.is_empty() => {
+            if p.len() < 8 {
+                return Err(AppError::Unprocessable("password minimal 8 karakter".into()));
+            }
+            p.to_string()
+        }
+        _ => uuid::Uuid::new_v4().simple().to_string()[..10].to_string(),
+    };
+    let hash = crate::modules::auth::service::hash_password(&password);
+    let ins = sqlx::query(
+        "INSERT INTO users (phone, email, password_hash, account_type, status) VALUES (?, ?, ?, 'PENGURUS', 'ACTIVE')")
+        .bind(phone).bind(email).bind(&hash)
+        .execute(&st.pool).await.map_err(dberr)?;
+    let id = ins.last_insert_id() as i64;
+    sqlx::query("INSERT INTO user_profiles (user_id, full_name) VALUES (?, ?)")
+        .bind(id).bind(nama).execute(&st.pool).await.map_err(dberr)?;
+    sqlx::query("INSERT IGNORE INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE code = 'PENERIMA'")
+        .bind(id).execute(&st.pool).await.map_err(dberr)?;
+    sqlx::query("INSERT IGNORE INTO wallets (user_id, balance) VALUES (?, 0)")
+        .bind(id).execute(&st.pool).await.map_err(dberr)?;
+    let _ = sqlx::query("INSERT INTO audit_logs (actor_id, action, module, entity_type, entity_id, new_value) \
+                         VALUES (?, 'CREATE', 'infaq', 'users', ?, ?)")
+        .bind(cu.user_id).bind(id.to_string())
+        .bind(json!({ "full_name": nama, "email": email, "phone": phone, "role": "PENERIMA" }).to_string())
+        .execute(&st.pool).await;
+    Ok(ok(json!({
+        "id": id, "full_name": nama, "email": email, "phone": phone,
+        "password": password, "password_generated": generated,
+        "login_hint": "Login panel admin dengan email/HP ini",
+    }), StatusCode::CREATED))
 }
 
 async fn audit_list(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<std::collections::HashMap<String, String>>) -> Result<Response, AppError> {

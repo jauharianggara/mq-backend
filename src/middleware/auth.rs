@@ -38,6 +38,19 @@ impl CurrentUser {
             Err(AppError::Forbidden(format!("butuh permission {perm}")))
         }
     }
+
+    /// Gate multi-permission — cukup salah satu (mis. penarikan: ustadz ATAU penerima infaq).
+    pub fn require_any(&self, perms: &[&str]) -> Result<(), AppError> {
+        self.require_active()?;
+        if perms.iter().any(|p| self.permissions.contains::<str>(p)) {
+            Ok(())
+        } else {
+            Err(AppError::Forbidden(format!(
+                "butuh salah satu permission: {}",
+                perms.join(", ")
+            )))
+        }
+    }
 }
 
 /// Extractor opsional utk endpoint publik yang ingin tahu siapa pemanggil (mis. learning).

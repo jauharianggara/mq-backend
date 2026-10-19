@@ -9,6 +9,7 @@ const ROLES: &[(&str, &str, &str)] = &[
     ("MODERATOR", "Moderator", "Moderasi tanya ustadz & publikasi jawaban"),
     ("USTADZ", "Ustadz", "Review setoran hafalan & menjawab pertanyaan"),
     ("SANTRI", "Santri", "Murojaah, khatmil, tanya ustadz"),
+    ("PENERIMA", "Penerima Infaq", "Penerima pembagian infaq: saldo, mutasi, ajukan penarikan"),
 ];
 
 /// (module, code, description)
@@ -37,6 +38,8 @@ const PERMISSIONS: &[(&str, &str, &str)] = &[
     ("visits", "visits.book", "Santri: pesan ustadz terdekat, chat transaksi, review ustadz"),
     ("visits", "ustadz.visits.manage", "Ustadz: settings kunjungan, tarif, confirm/decline/complete, review santri"),
     ("visits", "visits.admin", "Admin: monitoring kunjungan + pembayaran Xendit + force actions + moderasi review"),
+    ("infaq", "infaq.view", "Lihat saldo & mutasi infaq sendiri"),
+    ("infaq", "infaq.withdraw", "Ajukan penarikan dana infaq"),
 ];
 
 /// role_code -> [permission codes] (sinkron docs/permissions.md)
@@ -72,6 +75,9 @@ const ROLE_PERMISSIONS: &[(&str, &[&str])] = &[
         "account.delete", "memorization.submit", "khatmil.join", "khatmil.read",
         "question.create", "visits.book",
     ]),
+    ("PENERIMA", &[
+        "notification.read.self", "account.delete", "infaq.view", "infaq.withdraw",
+    ]),
 ];
 
 const CATEGORIES: &[(&str, &str)] = &[
@@ -103,6 +109,8 @@ const SETTINGS: &[(&str, &str, &str)] = &[
     ("visit_minor_booking_policy", "\"guardian_required\"", "Flag kebijakan anak (live review; gate wali = backlog, belum berefek)"),
     ("visit_income_split", r#"[{"to":"USTADZ","pct":80},{"to":"PLATFORM","pct":20}]"#,
         "Pembagian income Panggil Ustadz (fee infaq) — array JSON [{\"to\":\"USTADZ\"|\"USER\"|\"PLATFORM\",\"pct\":0-100,\"user_id\":?}], total pct wajib 100; USER = masuk wallet user_id, PLATFORM = ditahan pengelola aplikasi"),
+    ("payout_fee_amount_infaq", "0", "Biaya admin penarikan penerima infaq (Rp, default gratis)"),
+    ("payout_min_amount_infaq", "50000", "Minimal penarikan penerima infaq (Rp)"),
     // --- Khatmil: pengingat juz mangkrak (plan admin rev 3.3 F1.8) ---
     ("khatmil_reminder_enabled", "false", "Kill-switch pengingat otomatis juz mangkrak (default OFF — admin aktifkan dari Pengaturan)"),
     ("khatmil_reminder_stale_days", "3", "Juz dianggap mangkrak bila terakhir lapor > N hari (0 = langsung)"),

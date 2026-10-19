@@ -36,6 +36,10 @@ pub fn routes() -> Router<AppState> {
         .route("/ustadz/visits/{id}/start", post(handler::start_visit))
         .route("/ustadz/visits/{id}/complete", post(handler::complete_visit))
         .route("/ustadz/payouts", get(handler::my_payouts).post(handler::request_payout))
+        // ---- penerima infaq (alias self-service + admin atas nama) ----
+        .route("/infaq/payouts", get(handler::my_payouts).post(handler::request_payout))
+        .route("/admin/infaq/laporan", get(handler::infaq_laporan))
+        .route("/admin/infaq/payouts", post(handler::admin_create_payout_for))
         // ---- pembayaran (webhook publik + simulasi dev) ----
         .route("/payments/xendit/callback", post(handler::xendit_callback))
         .route("/payments/xendit/simulate", post(handler::xendit_simulate))

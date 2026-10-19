@@ -459,24 +459,46 @@ pub async fn job_review_window(state: &AppState) -> Result<u64, AppError> {
     Ok(n)
 }
 
-// ===================== payout ustadz =====================
+// ===================== payout ustadz & penerima infaq =====================
 
-pub async fn create_payout(state: &AppState, ustadz_id: i64, bank: &str, no: &str, an: &str, amount: i64) -> Result<i64, AppError> {
-    let fee = setting_i64(&state.pool, "payout_fee_amount", 6500).await;
-    let min = setting_i64(&state.pool, "payout_min_amount", 50000).await;
+/// Syarat penarikan: biaya admin + saldo minimal (ustadz vs penerima infaq).
+#[derive(Debug, Clone, Copy)]
+pub struct PayoutTerms {
+    pub fee: i64,
+    pub min: i64,
+}
+
+/// Baca syarat penarikan dari settings — ustadz pakai setting lama,
+/// penerima infaq pakai setting `*_infaq` (default gratis, min 50rb).
+pub async fn payout_terms(pool: &MySqlPool, infaq: bool) -> PayoutTerms {
+    if infaq {
+        PayoutTerms {
+            fee: setting_i64(pool, "payout_fee_amount_infaq", 0).await,
+            min: setting_i64(pool, "payout_min_amount_infaq", 50000).await,
+        }
+    } else {
+        PayoutTerms {
+            fee: setting_i64(pool, "payout_fee_amount", 6500).await,
+            min: setting_i64(pool, "payout_min_amount", 50000).await,
+        }
+    }
+}
+
+pub async fn create_payout(state: &AppState, user_id: i64, bank: &str, no: &str, an: &str, amount: i64, terms: PayoutTerms, label: &str) -> Result<i64, AppError> {
+    let PayoutTerms { fee, min } = terms;
     if amount < min {
         return Err(AppError::Unprocessable(format!("minimum penarikan Rp {min}")));
     }
     // diterima = amount - fee; saldo didebit sebesar amount (anti tarik dua kali)
-    crate::modules::wallet::service::debit(&state.pool, ustadz_id, amount, "PAYOUT", "payout_request", 0).await?;
+    crate::modules::wallet::service::debit(&state.pool, user_id, amount, "PAYOUT", "payout_request", 0).await?;
     let ins = sqlx::query(
         "INSERT INTO payout_requests (ustadz_id, amount, fee, bank_name, bank_account_no, bank_account_name) \
          VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(ustadz_id).bind(amount - fee).bind(fee).bind(bank).bind(no).bind(an)
+        .bind(user_id).bind(amount - fee).bind(fee).bind(bank).bind(no).bind(an)
         .execute(&state.pool).await.map_err(dberr)?;
     let id = ins.last_insert_id() as i64;
     notify_admins(&state.pool, "Pengajuan penarikan dana baru",
-        &format!("Ustadz mengajukan penarikan Rp {} (diterima Rp {}) ke {bank} {no}. Buka menu Penarikan utk ACC/tolak.", fmt_rp(amount), fmt_rp(amount - fee))).await;
+        &format!("{label} mengajukan penarikan Rp {} (diterima Rp {}) ke {bank} {no}. Buka menu Penarikan utk ACC/tolak.", fmt_rp(amount), fmt_rp(amount - fee))).await;
     Ok(id)
 }
 
@@ -484,6 +506,52 @@ pub fn fmt_rp(n: i64) -> String {
     n.to_string().chars().rev().collect::<Vec<_>>().chunks(3)
         .map(|c| c.iter().collect::<String>())
         .collect::<Vec<_>>().join(".").chars().rev().collect()
+}
+
+/// Satu baris laporan penerima infaq (menu Penerima / Rekap Infaq admin).
+#[derive(Debug, serde::Serialize)]
+pub struct InfaqLaporanRow {
+    pub user_id: i64,
+    pub nama: Option<String>,
+    pub email: Option<String>,
+    pub status: String,
+    pub saldo: i64,
+    pub total_diterima: i64,
+    pub total_ditarik: i64,
+    pub pending_tarik: i64,
+}
+
+/// Laporan per penerima infaq. `bulan` = "YYYY-MM" (opsional) memfilter
+/// total diterima/ditarik per bulan; saldo & pending selalu kondisi kini.
+pub async fn infaq_laporan(pool: &MySqlPool, bulan: Option<&str>) -> Result<Vec<InfaqLaporanRow>, AppError> {
+    if let Some(b) = bulan {
+        if !b.chars().all(|c| c.is_ascii_digit() || c == '-') || b.len() != 7 {
+            return Err(AppError::Unprocessable("bulan wajib format YYYY-MM".into()));
+        }
+    }
+    // filter bulan dgn substring tanggal aman (created_at 'YYYY-MM-DD ...')
+    let e_filter = bulan.map(|b| format!(" AND wt.created_at LIKE '{b}%'")).unwrap_or_default();
+    let p_filter = bulan.map(|b| format!(" AND pr.created_at LIKE '{b}%'")).unwrap_or_default();
+    let rows: Vec<(i64, Option<String>, Option<String>, String, i64, i64, i64, i64)> = sqlx::query_as(&format!(
+        "SELECT u.id, upn.full_name, u.email, u.status, \
+         COALESCE(w.balance, 0), \
+         COALESCE(e.total_diterima, 0), COALESCE(p.total_ditarik, 0), COALESCE(p.pending_tarik, 0) \
+         FROM users u \
+         JOIN user_roles ur ON ur.user_id = u.id \
+         JOIN roles r ON r.id = ur.role_id AND r.code = 'PENERIMA' \
+         LEFT JOIN user_profiles upn ON upn.user_id = u.id \
+         LEFT JOIN wallets w ON w.user_id = u.id \
+         LEFT JOIN (SELECT user_id, CAST(SUM(amount) AS SIGNED) total_diterima FROM wallet_transactions wt \
+                    WHERE wt.tx_type = 'EARNING' AND wt.subject_type = 'ustadz_visit'{e_filter} GROUP BY wt.user_id) e ON e.user_id = u.id \
+         LEFT JOIN (SELECT ustadz_id, \
+                    CAST(SUM(CASE WHEN status = 'TRANSFERRED' THEN amount ELSE 0 END) AS SIGNED) total_ditarik, \
+                    CAST(SUM(CASE WHEN status IN ('PENDING','APPROVED') THEN amount ELSE 0 END) AS SIGNED) pending_tarik \
+                    FROM payout_requests pr WHERE 1=1{p_filter} GROUP BY pr.ustadz_id) p ON p.ustadz_id = u.id \
+         ORDER BY u.id")) 
+        .fetch_all(pool).await.map_err(dberr)?;
+    Ok(rows.into_iter().map(|(user_id, nama, email, status, saldo, total_diterima, total_ditarik, pending_tarik)| {
+        InfaqLaporanRow { user_id, nama, email, status, saldo, total_diterima, total_ditarik, pending_tarik }
+    }).collect())
 }
 
 pub async fn ustadz_payouts(pool: &MySqlPool, ustadz_id: i64) -> Result<Vec<crate::modules::visits::dto::PayoutOut>, AppError> {

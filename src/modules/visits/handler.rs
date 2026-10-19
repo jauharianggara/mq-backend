@@ -219,18 +219,29 @@ pub async fn my_visits(cu: CurrentUser, State(st): State<AppState>) -> Result<Re
     Ok(ok(svc::my_visits(&st.pool, cu.user_id).await?, StatusCode::OK))
 }
 
-// ===================== penarikan dana (payout ustadz — self-service) =====================
+// ===================== penarikan dana (ustadz & penerima infaq) =====================
+
+/// Penarikan boleh oleh ustadz ATAU penerima infaq.
+fn payout_perm(cu: &CurrentUser) -> Result<(), AppError> {
+    cu.require_any(&["ustadz.visits.manage", "infaq.withdraw"])
+}
+
+/// Syarat penarikan mengikuti peran: yang punya permission ustadz → syarat
+/// ustadz; sisanya (penerima infaq) → syarat infaq (fee default 0).
+async fn payout_terms_for(cu: &CurrentUser, st: &AppState) -> pay::PayoutTerms {
+    let infaq = !cu.permissions.contains("ustadz.visits.manage");
+    pay::payout_terms(&st.pool, infaq).await
+}
 
 pub async fn my_payouts(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
-    ustadz_perm(&cu)?;
+    payout_perm(&cu)?;
     let items = pay::ustadz_payouts(&st.pool, cu.user_id).await?;
-    let fee = svc::setting_i64(&st.pool, "payout_fee_amount", 6500).await;
-    let min = svc::setting_i64(&st.pool, "payout_min_amount", 50000).await;
-    Ok(ok(json!({ "items": items, "fee": fee, "min": min }), StatusCode::OK))
+    let terms = payout_terms_for(&cu, &st).await;
+    Ok(ok(json!({ "items": items, "fee": terms.fee, "min": terms.min }), StatusCode::OK))
 }
 
 pub async fn request_payout(cu: CurrentUser, State(st): State<AppState>, Json(req): Json<PayoutCreateReq>) -> Result<Response, AppError> {
-    ustadz_perm(&cu)?;
+    payout_perm(&cu)?;
     let bank = req.bank_name.trim();
     let no = req.account_no.trim();
     let an = req.account_name.trim();
@@ -240,7 +251,9 @@ pub async fn request_payout(cu: CurrentUser, State(st): State<AppState>, Json(re
     if req.amount <= 0 {
         return Err(AppError::Unprocessable("nominal tidak valid".into()));
     }
-    let id = pay::create_payout(&st, cu.user_id, bank, no, an, req.amount).await?;
+    let terms = payout_terms_for(&cu, &st).await;
+    let label = if cu.permissions.contains("ustadz.visits.manage") { "Ustadz" } else { "Penerima infaq" };
+    let id = pay::create_payout(&st, cu.user_id, bank, no, an, req.amount, terms, label).await?;
     let bal = crate::modules::wallet::service::balance(&st.pool, cu.user_id).await?;
     Ok(ok(json!({ "id": id, "balance": bal }), StatusCode::CREATED))
 }
@@ -399,6 +412,65 @@ pub async fn admin_messages(cu: CurrentUser, State(st): State<AppState>, Path(id
     let limit = q.limit.unwrap_or(50).clamp(1, 100);
     let (items, next) = svc::messages_list(&st.pool, &cu, id, limit, q.cursor).await?;
     Ok(paged(items, next))
+}
+
+// ===================== infaq: laporan & pengajuan atas nama penerima =====================
+
+#[derive(Deserialize)]
+pub struct InfaqLaporanQ {
+    /// Filter total diterima/ditarik per bulan, format YYYY-MM (opsional).
+    pub bulan: Option<String>,
+}
+
+pub async fn infaq_laporan(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<InfaqLaporanQ>) -> Result<Response, AppError> {
+    admin_perm(&cu)?;
+    let items = pay::infaq_laporan(&st.pool, q.bulan.as_deref()).await?;
+    Ok(ok(json!({ "items": items }), StatusCode::OK))
+}
+
+#[derive(Deserialize)]
+pub struct AdminPayoutForReq {
+    pub user_id: i64,
+    pub amount: i64,
+    pub bank_name: String,
+    pub account_no: String,
+    pub account_name: String,
+}
+
+/// Admin mengajukan penarikan ATAS NAMA penerima infaq (yg tidak/ belum login).
+pub async fn admin_create_payout_for(cu: CurrentUser, State(st): State<AppState>, Json(req): Json<AdminPayoutForReq>) -> Result<Response, AppError> {
+    admin_perm(&cu)?;
+    let (ada_penerima,): (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM user_roles ur JOIN roles r ON r.id = ur.role_id \
+         WHERE ur.user_id = ? AND r.code = 'PENERIMA'")
+        .bind(req.user_id).fetch_one(&st.pool).await.map_err(|e| {
+            tracing::error!("db: {e}");
+            AppError::Internal("db".into())
+        })?;
+    if ada_penerima == 0 {
+        return Err(AppError::Unprocessable("user bukan penerima infaq".into()));
+    }
+    let bank = req.bank_name.trim();
+    let no = req.account_no.trim();
+    let an = req.account_name.trim();
+    if bank.is_empty() || no.is_empty() || an.is_empty() {
+        return Err(AppError::Unprocessable("nama bank, nomor rekening, dan nama pemilik wajib diisi".into()));
+    }
+    if req.amount <= 0 {
+        return Err(AppError::Unprocessable("nominal tidak valid".into()));
+    }
+    let terms = pay::payout_terms(&st.pool, true).await;
+    let id = pay::create_payout(&st, req.user_id, bank, no, an, req.amount, terms, "Penerima infaq (dibuat admin)").await?;
+    let _ = sqlx::query("INSERT INTO audit_logs (actor_id, action, module, entity_type, entity_id, new_value) \
+                         VALUES (?, 'CREATE', 'infaq', 'payout_requests', ?, ?)")
+        .bind(cu.user_id).bind(id.to_string())
+        .bind(json!({ "for_user": req.user_id, "amount": req.amount, "bank": bank, "account_no": no }).to_string())
+        .execute(&st.pool).await;
+    crate::modules::visits::service::notify(&st.pool, req.user_id, "INFAQ_PAYOUT_ADMIN",
+        "Pengajuan penarikan dibuat admin",
+        &format!("Admin mengajukan penarikan Rp {} atas nama Anda (rekening {bank} {no}). Menunggu ACC admin.", pay::fmt_rp(req.amount)),
+        &id.to_string()).await?;
+    Ok(ok(json!({ "id": id }), StatusCode::CREATED))
 }
 
 #[derive(Deserialize)]
