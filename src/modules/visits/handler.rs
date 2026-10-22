@@ -428,6 +428,13 @@ pub async fn infaq_laporan(cu: CurrentUser, State(st): State<AppState>, Query(q)
     Ok(ok(json!({ "items": items }), StatusCode::OK))
 }
 
+/// Rekap porsi pengelola aplikasi (fee infaq PLATFORM) — total + rincian per kunjungan.
+pub async fn infaq_pengelola(cu: CurrentUser, State(st): State<AppState>, Query(q): Query<InfaqLaporanQ>) -> Result<Response, AppError> {
+    admin_perm(&cu)?;
+    let (total, rows) = pay::infaq_pengelola(&st.pool, q.bulan.as_deref()).await?;
+    Ok(ok(json!({ "total": total, "rows": rows }), StatusCode::OK))
+}
+
 #[derive(Deserialize)]
 pub struct AdminPayoutForReq {
     pub user_id: i64,

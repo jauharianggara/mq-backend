@@ -554,6 +554,51 @@ pub async fn infaq_laporan(pool: &MySqlPool, bulan: Option<&str>) -> Result<Vec<
     }).collect())
 }
 
+/// Satu baris rincian porsi pengelola per kunjungan.
+#[derive(Debug, serde::Serialize)]
+pub struct PengelolaRow {
+    pub visit_id: i64,
+    pub paid_at: Option<String>,
+    pub total_bayar: i64,
+    pub pengelola: i64,
+}
+
+/// Rekap porsi pengelola aplikasi (PLATFORM / fee infaq) — porsi ini tidak
+/// masuk wallet siapa pun, jadi dihitung: total PAID per kunjungan dikurangi
+/// EARNING yang sudah di-credit utk kunjungan itu (berlaku retroaktif).
+pub async fn infaq_pengelola(pool: &MySqlPool, bulan: Option<&str>) -> Result<(i64, Vec<PengelolaRow>), AppError> {
+    if let Some(b) = bulan {
+        if !b.chars().all(|c| c.is_ascii_digit() || c == '-') || b.len() != 7 {
+            return Err(AppError::Unprocessable("bulan wajib format YYYY-MM".into()));
+        }
+    }
+    let p_filter = bulan.map(|b| format!(" AND COALESCE(p.paid_at, p.created_at) LIKE '{b}%'")).unwrap_or_default();
+    let e_filter = bulan.map(|b| format!(" AND wt.created_at LIKE '{b}%'")).unwrap_or_default();
+    let rows: Vec<(i64, Option<String>, i64, i64)> = sqlx::query_as(&format!(
+        "SELECT v.visit_id, v.paid_at, v.total_bayar, GREATEST(v.total_bayar - COALESCE(e.earn, 0), 0) AS pengelola \
+         FROM ( \
+           SELECT p.subject_id AS visit_id, \
+                  DATE_FORMAT(MAX(COALESCE(p.paid_at, p.created_at)), '%Y-%m-%dT%H:%i:%sZ') AS paid_at, \
+                  CAST(SUM(p.amount) AS SIGNED) AS total_bayar \
+           FROM payments p \
+           WHERE p.subject_type = 'ustadz_visit' AND p.status = 'PAID'{p_filter} \
+           GROUP BY p.subject_id \
+         ) v \
+         LEFT JOIN ( \
+           SELECT wt.subject_id AS visit_id, CAST(SUM(wt.amount) AS SIGNED) AS earn \
+           FROM wallet_transactions wt \
+           WHERE wt.tx_type = 'EARNING' AND wt.subject_type = 'ustadz_visit'{e_filter} \
+           GROUP BY wt.subject_id \
+         ) e ON e.visit_id = v.visit_id \
+         ORDER BY v.visit_id DESC"))
+        .fetch_all(pool).await.map_err(dberr)?;
+    let total: i64 = rows.iter().map(|r| r.3).sum();
+    let rows = rows.into_iter().map(|(visit_id, paid_at, total_bayar, pengelola)| {
+        PengelolaRow { visit_id, paid_at, total_bayar, pengelola }
+    }).collect();
+    Ok((total, rows))
+}
+
 pub async fn ustadz_payouts(pool: &MySqlPool, ustadz_id: i64) -> Result<Vec<crate::modules::visits::dto::PayoutOut>, AppError> {
     let rows: Vec<(i64, i64, i64, String, String, String, String, Option<String>, String, Option<String>)> = sqlx::query_as(
         "SELECT id, amount, fee, bank_name, bank_account_no, bank_account_name, status, rejected_reason, \
