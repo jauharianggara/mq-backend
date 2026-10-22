@@ -47,6 +47,7 @@ pub fn routes() -> Router<AppState> {
         .route("/admin/users/{id}", patch(users_patch))
         // ---- penerima infaq ----
         .route("/admin/penerima", post(penerima_create))
+        .route("/admin/notifications/targets-count", get(notifications_targets_count))
         .route("/admin/notifications", get(notifications_history).post(notifications_send))
 }
 
@@ -796,4 +797,44 @@ async fn notifications_history(
         })
         .collect();
     Ok(ok(items, StatusCode::OK))
+}
+
+/// Pratinjau jumlah penerima utk target notifikasi — dipakai form admin
+/// SEBELUM kirim (aturan UI: preview dampak, anti-misleading). Audience
+/// query sama persis dgn notifications_send.
+async fn notifications_targets_count(
+    cu: CurrentUser,
+    State(st): State<AppState>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    cu.require("notifications.send")?;
+    let target = q.get("target").map(String::as_str).unwrap_or("");
+    let n: i64 = match target {
+        "all" => sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE status = 'ACTIVE'")
+            .fetch_one(&st.pool).await.map_err(dberr)?,
+        "role" => {
+            let role = q.get("role").map(String::as_str).unwrap_or("");
+            let known: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM roles WHERE code = ?")
+                .bind(role).fetch_one(&st.pool).await.map_err(dberr)?;
+            if known.0 == 0 {
+                return Err(AppError::Unprocessable(format!("role tidak dikenal: {role}")));
+            }
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM users u \
+                 JOIN user_roles ur ON ur.user_id = u.id \
+                 JOIN roles r ON r.id = ur.role_id \
+                 WHERE u.status = 'ACTIVE' AND r.code = ?")
+                .bind(role).fetch_one(&st.pool).await.map_err(dberr)?
+        }
+        "user" => {
+            let uid: i64 = q.get("user_id").and_then(|v| v.parse().ok())
+                .ok_or_else(|| AppError::Unprocessable("user_id wajib utk target=user".into()))?;
+            let hit: (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM users WHERE id = ? AND status = 'ACTIVE'")
+                .bind(uid).fetch_one(&st.pool).await.map_err(dberr)?;
+            hit.0
+        }
+        _ => return Err(AppError::Unprocessable("target tidak valid (all|role|user)".into())),
+    };
+    Ok(ok(json!({ "recipients": n }), StatusCode::OK))
 }
