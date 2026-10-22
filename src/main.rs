@@ -23,6 +23,12 @@ async fn main() {
     let pool = mq_backend_lib::infrastructure::database::build_pool(&database_url).await;
     let state = AppState::new(pool, &cfg).await;
 
+    // Channel PUSH: pump outbox user_notifications → FCM (satu instance saja).
+    if let Some(fcm) = state.fcm.clone() {
+        tokio::spawn(mq_backend_lib::infrastructure::fcm::run_pump(state.pool.clone(), fcm));
+        tracing::info!("FCM push pump aktif (outbox user_notifications)");
+    }
+
     tracing::info!("MQ backend starting on http://{addr}");
 
     // CORS ketat: hanya origin yang diizinkan (Phase 5.1)

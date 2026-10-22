@@ -689,7 +689,8 @@ struct NotifSendReq {
 }
 
 /// Kirim notifikasi IN_APP: fan-out langsung ke `user_notifications`
-/// (channel PUSH/FCM menyusul). Semua kirim tercatat di audit_logs.
+/// (push FCM dikirim otomatis oleh outbox pump — infrastructure::fcm).
+/// Semua kirim tercatat di audit_logs.
 async fn notifications_send(
     cu: CurrentUser,
     State(st): State<AppState>,

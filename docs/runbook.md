@@ -153,6 +153,13 @@ taskkill /F /IM mq-backend.exe; sleep 2
 - Cloudflare bot check menolak UA non-browser (python 1010); UA Dart/browser normal lolos — smoke harus set UA.
 - Backup config cloudflared: config.yml.bak-media.
 
+## Channel PUSH — FCM outbox (22Okt)
+- Notifikasi ditulis modul seperti biasa (`user_notifications`, channel IN_APP); **pump di proses `mq-backend`** (bukan worker — jangan dua pump!) ambil baris `pushed_at IS NULL` tiap 3 dtk, kirim FCM HTTP v1 ke semua device aktif `user_devices`.
+- Routing per `app_id` device: `SANTRI_APP` → env `FCM_SANTRI_SERVICE_ACCOUNT`, `USTADZ_APP` → `FCM_USTADZ_SERVICE_ACCOUNT` = **path file service-account JSON** (Firebase Console → Project settings → Service accounts → Generate new private key; SA dgn role *Firebase Cloud Messaging API Admin*).
+- Token mati (FCM 404/400-token) → `user_devices.is_active = 0` otomatis. Error sementara di-retry maks 5x (`push_attempts`); sukses parsial tidak di-retry (anti push dobel).
+- Env tidak diset → pump mati, IN_APP tetap jalan (log warning saat start).
+- Lokasi file kredensial: lokal `C:\mq\secrets\fcm-santri.json` + `fcm-ustadz.json`; prod .116 `/etc/mq/fcm-*.json` (chmod 600, path ditambahkan di `/etc/mq/mq-backend.env`).
+
 ## PROD — server synergy .116 (2 Okt 2026)
 Domain: **api.mq.synergyinfinity.id** (BE :8321) · **admin.mq.synergyinfinity.id** (Next standalone pm2 `mq-admin` :3210) · **media.mq.synergyinfinity.id** (SeaweedFS S3 :9000, path-style, `force_path_style`). Cert LE SAN-3-domain via acme.sh (webroot /www/wwwroot/mq-challenge; auto-renew + reloadcmd nginx reload). DNS wildcard *.mq → 103.167.113.116 (PowerDNS di server).
 

@@ -12,6 +12,8 @@ pub struct AppState {
     pub pool: MySqlPool,
     pub jwt_secret: Arc<String>,
     pub storage: Option<Arc<Storage>>,
+    /// Sender FCM per app_id (SANTRI_APP/USTADZ_APP); None = channel PUSH nonaktif.
+    pub fcm: Option<Arc<crate::infrastructure::fcm::FcmManager>>,
     dev_expose_tokens: bool,
     /// kill-switch semua rate-limit in-process (MQ_RATE_LIMIT_ENABLED, default true).
     /// false = semua gate no-op (allow) — dipakai saat fase dev/testing aplikasi.
@@ -51,10 +53,18 @@ impl AppState {
                 None
             }
         };
+        let fcm_mgr = crate::infrastructure::fcm::FcmManager::from_env();
+        let fcm = if fcm_mgr.is_empty() {
+            tracing::warn!("FCM_*_SERVICE_ACCOUNT tidak diset — channel PUSH nonaktif (IN_APP tetap jalan)");
+            None
+        } else {
+            Some(Arc::new(fcm_mgr))
+        };
         Self {
             pool,
             jwt_secret: Arc::new(jwt_secret),
             storage: s3,
+            fcm,
             dev_expose_tokens: std::env::var("MQ_DEV_EXPOSE_TOKENS")
                 .map(|v| v == "true")
                 .unwrap_or(false),

@@ -244,7 +244,7 @@ pub async fn review(
                 .bind(santri_id).bind(submission_id.to_string())
                 .bind(format!("{{\"verdict\":\"{verdict}\",\"ustadz_id\":{ustadz_id}}}"))
                 .execute(&mut *tx).await.map_err(dberr)?;
-            // notif in-app santri (modul 10 tinggal fan-out/push)
+            // notif in-app santri (push FCM otomatis via outbox pump infrastructure::fcm)
             sqlx::query(
                 "INSERT INTO user_notifications (user_id, template_code, title, body, data, channel) \
                  VALUES (?, 'SETORAN_REVIEWED', 'Setoran hafalan diperiksa', ?, ?, 'IN_APP')")
