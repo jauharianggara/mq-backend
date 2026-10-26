@@ -43,7 +43,7 @@ const BIOS_U: &[&str] = &[
     "Pengurus lembaga pendidikan islam, pembina santri mukim.",
 ];
 
-include!("seed_people_data.rs");
+include!("data/seed_people_data.rs");
 
 #[tokio::main]
 async fn main() {
