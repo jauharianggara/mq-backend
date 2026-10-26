@@ -38,10 +38,6 @@ pub struct DeviceOut {
 
 #[derive(Debug, Serialize)]
 pub struct ProgressSummary {
-    pub ayat_passed: i64,
-    pub surah_started: i64,
-    pub total_setoran: i64,
-    pub setoran_pending: i64,
     pub last_read: Option<LastRead>,
 }
 

@@ -26,22 +26,6 @@ pub async fn put_specializations(cu: CurrentUser, State(st): State<AppState>, Js
     Ok(ok(json!({ "updated": true }), StatusCode::OK))
 }
 
-pub async fn get_availability(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
-    cu.require("ustadz.profile.self")?;
-    Ok(ok(svc::get_availability(&st.pool, cu.user_id).await?, StatusCode::OK))
-}
-
-pub async fn put_availability(cu: CurrentUser, State(st): State<AppState>, Json(req): Json<PutAvailabilityReq>) -> Result<Response, AppError> {
-    cu.require("ustadz.profile.self")?;
-    svc::put_availability(&st.pool, cu.user_id, req).await?;
-    Ok(ok(json!({ "updated": true }), StatusCode::OK))
-}
-
-pub async fn stats(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
-    cu.require("ustadz.profile.self")?;
-    Ok(ok(svc::stats(&st.pool, cu.user_id).await?, StatusCode::OK))
-}
-
 pub async fn get_detail(cu: CurrentUser, State(st): State<AppState>) -> Result<Response, AppError> {
     cu.require("ustadz.profile.self")?;
     Ok(ok(svc::get_detail(&st.pool, cu.user_id).await?, StatusCode::OK))

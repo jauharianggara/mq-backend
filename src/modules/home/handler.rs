@@ -32,20 +32,12 @@ pub async fn santri_home(cu: CurrentUser, State(st): State<AppState>) -> Result<
     cu.require_active()?;
     let pool = &st.pool;
 
-    let (last_read, hafalan, khatmil, qs_new, notif, prof) = tokio::join!(
+    let (last_read, khatmil, notif, prof) = tokio::join!(
         sqlx::query_as::<_, (Option<i64>, Option<String>, Option<i64>, Option<i64>, Option<i64>)>(
             "SELECT qa.id, qs.name_id, qa.ayah_number, qa.page, qa.juz \
              FROM user_reading_progress urp JOIN quran_ayahs qa ON qa.id = urp.last_ayah_id \
              JOIN quran_surahs qs ON qs.id = qa.surah_id WHERE urp.user_id = ?")
             .bind(cu.user_id).fetch_optional(pool),
-        sqlx::query_as::<_, (i64, i64, i64, i64)>(
-            "SELECT \
-             (SELECT IFNULL(CAST(SUM(mp.passed_count) AS SIGNED), 0) FROM memorization_progress mp WHERE mp.user_id = ?), \
-             (SELECT COUNT(*) FROM memorization_progress mp WHERE mp.user_id = ?), \
-             (SELECT COUNT(*) FROM memorization_submissions ms WHERE ms.user_id = ? AND status IN ('PENDING','IN_REVIEW')), \
-             (SELECT COUNT(*) FROM memorization_submissions ms WHERE ms.user_id = ? AND status IN ('PASSED','REVISION','REJECTED') AND ms.reviewed_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY))")
-            .bind(cu.user_id).bind(cu.user_id).bind(cu.user_id).bind(cu.user_id)
-            .fetch_one(pool),
         sqlx::query_as::<_, (i64, String, i64, String, i64, i64)>(
             "SELECT a.id, c.name, a.juz, a.status, IFNULL(pg.pages_read, 0), IFNULL(pg.minutes_read, 0) \
              FROM khatmil_juz_assignments a \
@@ -55,11 +47,6 @@ pub async fn santri_home(cu: CurrentUser, State(st): State<AppState>) -> Result<
              WHERE p.user_id = ? AND a.status IN ('ASSIGNED','IN_PROGRESS') AND c.status = 'ACTIVE' \
              ORDER BY a.juz LIMIT 5")
             .bind(cu.user_id).fetch_all(pool),
-        sqlx::query_as::<_, (i64, String, String)>(
-            "SELECT q.id, q.title, q.status FROM questions q \
-             WHERE q.user_id = ? AND q.status IN ('ANSWERED','PUBLISH_REQUESTED','PUBLISHED') \
-             ORDER BY q.updated_at DESC LIMIT 3")
-            .bind(cu.user_id).fetch_all(pool),
         sqlx::query_as::<_, (i64,)>(
             "SELECT COUNT(*) FROM user_notifications WHERE user_id = ? AND read_at IS NULL")
             .bind(cu.user_id).fetch_one(pool),
@@ -68,7 +55,6 @@ pub async fn santri_home(cu: CurrentUser, State(st): State<AppState>) -> Result<
             .bind(cu.user_id).fetch_optional(pool),
     );
 
-    let (ayat_passed, surah_started, setoran_pending, review_recent) = hafalan.map_err(dberr)?;
     let (notif_count,) = notif.map_err(dberr)?;
     let name = prof.ok().flatten().and_then(|r| r.0).unwrap_or_default();
 
@@ -81,22 +67,11 @@ pub async fn santri_home(cu: CurrentUser, State(st): State<AppState>) -> Result<
         "pages_read": pages, "minutes_read": minutes
     })).collect();
 
-    let questions_json: Vec<_> = qs_new.unwrap_or_default().into_iter().map(|(id, title, status)| json!({
-        "id": id, "title": title, "status": status
-    })).collect();
-
     Ok(ok(json!({
         "greeting": greeting(),
         "full_name": name,
         "last_read": last_read_json,
-        "memorization": {
-            "ayat_passed": ayat_passed,
-            "surah_started": surah_started,
-            "setoran_pending": setoran_pending,
-            "review_recent": review_recent,
-        },
         "khatmil": khatmil_json,
-        "questions_recent": questions_json,
         "notification_unread": notif_count,
     })))
 }
@@ -106,53 +81,22 @@ pub async fn ustadz_home(cu: CurrentUser, State(st): State<AppState>) -> Result<
     crate::modules::ustadz::service::require_verified(&st.pool, cu.user_id).await?;
     let pool = &st.pool;
 
-    let (qp, qir, qo, sla, notif, prof) = tokio::join!(
-        sqlx::query_as::<_, (i64,)>(
-            "SELECT COUNT(*) FROM memorization_submissions WHERE status = 'PENDING' AND ustadz_id IS NULL")
-            .fetch_one(pool),
-        sqlx::query_as::<_, (i64,)>(
-            "SELECT COUNT(*) FROM memorization_submissions WHERE status = 'IN_REVIEW' AND ustadz_id = ?")
-            .bind(cu.user_id).fetch_one(pool),
-        sqlx::query_as::<_, (i64,)>(
-            "SELECT COUNT(*) FROM questions q JOIN question_assignments qa ON qa.question_id = q.id \
-             WHERE qa.ustadz_id = ? AND qa.status = 'ASSIGNED' AND q.status IN ('QUEUED','ASSIGNED')")
-            .bind(cu.user_id).fetch_one(pool),
-        sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
-            "SELECT TIMESTAMPDIFF(HOUR, q.created_at, UTC_TIMESTAMP()), q.title, DATE_FORMAT(q.created_at, '%Y-%m-%dT%H:%i:%sZ') \
-             FROM questions q JOIN question_assignments qa ON qa.question_id = q.id \
-             WHERE qa.ustadz_id = ? AND qa.status = 'ASSIGNED' AND q.status IN ('QUEUED','ASSIGNED') \
-             ORDER BY q.created_at ASC LIMIT 1")
-            .bind(cu.user_id).fetch_optional(pool),
+    let (notif, prof) = tokio::join!(
         sqlx::query_as::<_, (i64,)>(
             "SELECT COUNT(*) FROM user_notifications WHERE user_id = ? AND read_at IS NULL")
             .bind(cu.user_id).fetch_one(pool),
-        sqlx::query_as::<_, (Option<String>, i8, i64)>(
-            "SELECT (SELECT full_name FROM user_profiles WHERE user_id = up.user_id), up.is_accepting_questions, up.max_active_questions \
+        sqlx::query_as::<_, (Option<String>,)>(
+            "SELECT (SELECT full_name FROM user_profiles WHERE user_id = up.user_id) \
              FROM ustadz_profiles up WHERE up.user_id = ?")
             .bind(cu.user_id).fetch_optional(pool),
     );
 
-    let (pending,) = qp.map_err(dberr)?;
-    let (in_review,) = qir.map_err(dberr)?;
-    let (q_open,) = qo.map_err(dberr)?;
     let (notif_count,) = notif.map_err(dberr)?;
-    let (name, accepting, max_q) = prof.map_err(dberr)?
-        .map(|(n, a, m)| (n, a != 0, m)).unwrap_or((None, false, 10));
-
-    let sla_json = sla.ok().flatten().map(|(hours, title, created)| {
-        let h = hours.unwrap_or(0);
-        json!({
-            "oldest_hours": h, "title": title, "created_at": created,
-            "sla_level": if h > 48 { "critical" } else if h > 24 { "warning" } else { "ok" }
-        })
-    });
+    let name = prof.map_err(dberr)?.map(|(n,)| n).unwrap_or(None);
 
     Ok(ok(json!({
         "greeting": greeting(),
         "full_name": name,
-        "memorization_queue": { "pending": pending, "in_review_mine": in_review },
-        "questions": { "open": q_open, "oldest": sla_json },
-        "availability": { "is_accepting_questions": accepting, "max_active_questions": max_q },
         "notification_unread": notif_count,
     })))
 }

@@ -139,8 +139,8 @@ async fn main() {
             if has_up == 0 {
                 let code = format!("UST-{:04}", uid);
                 sqlx::query(
-                    "INSERT INTO ustadz_profiles (user_id, code, title, bio, is_accepting_questions, max_active_questions, verified_at) \
-                     VALUES (?, ?, ?, ?, 1, 5, UTC_TIMESTAMP())")
+                    "INSERT INTO ustadz_profiles (user_id, code, title, bio, verified_at) \
+                     VALUES (?, ?, ?, ?, UTC_TIMESTAMP())")
                     .bind(uid).bind(&code).bind(p.title).bind(p.bio)
                     .execute(&pool).await
                     .unwrap_or_else(|e| panic!("insert ustadz_profiles {email}: {e}"));

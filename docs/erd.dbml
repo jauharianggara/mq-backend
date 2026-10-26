@@ -182,39 +182,6 @@ Table "media" {
   created_at timestamp [not null]
 }
 
-Table "memorization_progress" {
-  user_id bigint [pk]
-  surah_id smallint [pk]
-  last_passed_ayah smallint [not null]
-  passed_count smallint [not null]
-  updated_at timestamp [not null]
-}
-
-Table "memorization_reviews" {
-  id bigint [pk] [increment]
-  submission_id bigint [unique] [not null]
-  reviewer_id bigint [not null]
-  verdict varchar(50) [not null]
-  notes text
-  reply_audio_media_id bigint
-  created_at timestamp [not null]
-}
-
-Table "memorization_submissions" {
-  id bigint [pk] [increment]
-  user_id bigint [not null]
-  surah_id smallint [not null]
-  ayah_start smallint [not null]
-  ayah_end smallint [not null]
-  audio_media_id bigint [not null]
-  duration_ms int
-  note text
-  status varchar(50) [not null]
-  ustadz_id bigint
-  submitted_at timestamp [not null]
-  reviewed_at timestamp
-}
-
 Table "notification_templates" {
   id smallint [pk] [increment]
   code varchar(100) [unique] [not null]
@@ -231,15 +198,6 @@ Table "permissions" {
   description text
 }
 
-Table "question_assignments" {
-  id bigint [pk] [increment]
-  question_id bigint [not null]
-  ustadz_id bigint [not null]
-  status varchar(30) [not null]
-  assigned_at timestamp [not null]
-  responded_at timestamp
-}
-
 Table "question_categories" {
   id smallint [pk] [increment]
   slug varchar(100) [unique] [not null]
@@ -247,43 +205,6 @@ Table "question_categories" {
   icon varchar(50)
   sort_order smallint [not null]
   is_active tinyint(1) [not null]
-}
-
-Table "question_messages" {
-  id bigint [pk] [increment]
-  question_id bigint [not null]
-  sender_id bigint [not null]
-  type varchar(20) [not null]
-  content text
-  media_id bigint
-  duration_ms int
-  created_at timestamp [not null]
-}
-
-Table "question_status_history" {
-  id bigint [pk] [increment]
-  question_id bigint [not null]
-  from_status varchar(50)
-  to_status varchar(50) [not null]
-  changed_by bigint
-  note text
-  created_at timestamp [not null]
-}
-
-Table "questions" {
-  id bigint [pk] [increment]
-  user_id bigint [not null]
-  category_id smallint [not null]
-  is_anonymous tinyint(1) [not null]
-  title varchar(500) [not null]
-  body text
-  status varchar(50) [not null]
-  published_message_id bigint
-  approved_by bigint
-  published_at timestamp
-  closed_at timestamp
-  created_at timestamp [not null]
-  updated_at timestamp [not null]
 }
 
 Table "quran_audio_files" {
@@ -480,8 +401,6 @@ Table "ustadz_profiles" {
   title varchar(50)
   bio text
   photo_media_id bigint
-  is_accepting_questions tinyint(1) [not null]
-  max_active_questions smallint [not null]
   verified_at timestamp
   created_at timestamp [not null]
   updated_at timestamp [not null]
@@ -515,26 +434,6 @@ Ref: "learning_materials"."cover_media_id" <> "media"."id"
 Ref: "learning_materials"."created_by" <> "users"."id"
 Ref: "learning_materials"."tajwid_rule_id" <> "tajwid_rules"."id"
 Ref: "media"."owner_id" <> "users"."id"
-Ref: "memorization_progress"."surah_id" <> "quran_surahs"."id"
-Ref: "memorization_progress"."user_id" -> "users"."id"
-Ref: "memorization_reviews"."reply_audio_media_id" <> "media"."id"
-Ref: "memorization_reviews"."reviewer_id" <> "users"."id"
-Ref: "memorization_reviews"."submission_id" -> "memorization_submissions"."id"
-Ref: "memorization_submissions"."audio_media_id" <> "media"."id"
-Ref: "memorization_submissions"."surah_id" <> "quran_surahs"."id"
-Ref: "memorization_submissions"."user_id" <> "users"."id"
-Ref: "memorization_submissions"."ustadz_id" <> "users"."id"
-Ref: "question_assignments"."question_id" -> "questions"."id"
-Ref: "question_assignments"."ustadz_id" <> "users"."id"
-Ref: "question_messages"."media_id" <> "media"."id"
-Ref: "question_messages"."question_id" -> "questions"."id"
-Ref: "question_messages"."sender_id" <> "users"."id"
-Ref: "question_status_history"."changed_by" <> "users"."id"
-Ref: "question_status_history"."question_id" -> "questions"."id"
-Ref: "questions"."approved_by" <> "users"."id"
-Ref: "questions"."category_id" <> "question_categories"."id"
-Ref: "questions"."published_message_id" <> "question_messages"."id"
-Ref: "questions"."user_id" <> "users"."id"
 Ref: "quran_audio_files"."ayah_id" -> "quran_ayahs"."id"
 Ref: "quran_ayahs"."surah_id" <> "quran_surahs"."id"
 Ref: "quran_juzs"."end_surah_id" <> "quran_surahs"."id"

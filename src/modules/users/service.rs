@@ -99,8 +99,7 @@ pub async fn delete_me(pool: &MySqlPool, user_id: i64) -> Result<(), AppError> {
     sqlx::query("UPDATE user_profiles SET full_name = 'Akun Terhapus', gender = NULL, birth_date = NULL, \
                  address_text = NULL, city = NULL, province = NULL, photo_media_id = NULL, bio = NULL WHERE user_id = ?")
         .bind(user_id).execute(&mut *tx).await.map_err(dberr)?;
-    sqlx::query("UPDATE ustadz_profiles SET code = NULL, title = NULL, bio = NULL, photo_media_id = NULL, \
-                 is_accepting_questions = 0 WHERE user_id = ?")
+    sqlx::query("UPDATE ustadz_profiles SET code = NULL, title = NULL, bio = NULL, photo_media_id = NULL WHERE user_id = ?")
         .bind(user_id).execute(&mut *tx).await.map_err(dberr)?;
     sqlx::query("UPDATE user_sessions SET revoked_at = UTC_TIMESTAMP() WHERE user_id = ? AND revoked_at IS NULL")
         .bind(user_id).execute(&mut *tx).await.map_err(dberr)?;
@@ -175,21 +174,12 @@ pub async fn delete_device(pool: &MySqlPool, user_id: i64, device_id: i64) -> Re
 }
 
 pub async fn progress_summary(pool: &MySqlPool, user_id: i64) -> Result<ProgressSummary, AppError> {
-    let (ayat_passed, surah_started, total_setoran, setoran_pending): (i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT \
-           (SELECT CAST(COALESCE(SUM(passed_count), 0) AS SIGNED) FROM memorization_progress WHERE user_id = ?), \
-           (SELECT COUNT(*) FROM memorization_progress WHERE user_id = ?), \
-           (SELECT COUNT(*) FROM memorization_submissions WHERE user_id = ?), \
-           (SELECT COUNT(*) FROM memorization_submissions WHERE user_id = ? AND status IN ('PENDING','IN_REVIEW'))")
-        .bind(user_id).bind(user_id).bind(user_id).bind(user_id)
-        .fetch_one(pool).await.map_err(dberr)?;
     let last: Option<(i64, String, i64, i64)> = sqlx::query_as(
         "SELECT qa.surah_id, qs.name_id, qa.ayah_number, qa.page \
          FROM user_reading_progress urp JOIN quran_ayahs qa ON qa.id = urp.last_ayah_id \
          JOIN quran_surahs qs ON qs.id = qa.surah_id WHERE urp.user_id = ?")
         .bind(user_id).fetch_optional(pool).await.map_err(dberr)?;
     Ok(ProgressSummary {
-        ayat_passed, surah_started, total_setoran, setoran_pending,
         last_read: last.map(|(s, n, a, p)| LastRead { surah_id: s, surah_name: n, ayah_number: a, page: p }),
     })
 }

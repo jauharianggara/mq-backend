@@ -9,17 +9,12 @@ Sumber kebenaran implementasi: `src/bin/seed.rs` (idempotent).
 | media.upload | ✓ | ✓ | | ✓ | ✓ | `POST /media/uploads*` |
 | notification.read.self | ✓ | ✓ | ✓ | ✓ | ✓ | `GET /me/notifications*` |
 | account.delete | ✓ | ✓ | ✓ | ✓ | ✓ | `DELETE /me` |
-| memorization.submit | | | | | ✓ | `POST /memorization/submissions` |
 | khatmil.join | | | | | ✓ | join/claim/progress |
 | khatmil.read | ✓ | ✓ | | ✓ | ✓ | `GET /khatmil/campaigns*` |
-| question.create | | | | | ✓ | `POST /questions*` |
 | ustadz.profile.self | | | | ✓ | | `GET/PUT /me/ustadz/*` |
-| memorization.review | | | | ✓ | | `GET /ustadz/memorization/queue`, `POST .../review` |
-| question.answer | | | | ✓ | | inbox/answer/publish-request |
-| question.moderate | | ✓ | ✓ | | | moderation queue tanya |
-| question.publish.moderate | | ✓ | ✓ | | | approve/reject publish |
 | users.read | ✓ | ✓ | ✓ | | | admin users list |
 | users.manage | ✓ | ✓ | | | | admin CRUD user/status |
+| notifications.send | ✓ | ✓ | | | | `POST/GET /admin/notifications*` kirim notifikasi |
 | khatmil.manage | ✓ | ✓ | | | | CRUD campaign |
 | dashboard.view | ✓ | ✓ | | | | admin dashboard |
 | settings.manage | ✓ | ✓ | | | | settings key-value |
@@ -27,6 +22,6 @@ Sumber kebenaran implementasi: `src/bin/seed.rs` (idempotent).
 | roles.manage | ✓ | | | | | roles & permission matrix |
 
 Catatan:
-- ACL media per-konteks (Bagian III keputusan #7) berlaku DI ATAS permission: pemilik/ustadz-berhak/admin saja bisa presign media setoran — validasi per-relasi di service.
+- ACL media per-konteks (Bagian III keputusan #7) berlaku DI ATAS permission: pemilik/admin saja bisa presign media tertentu — validasi per-relasi di service.
 - `MODERATOR` tanpa `users.manage` (read-only identitas utk kebutuhan moderasi).
-- SANTRI tidak punya `memorization.review` dst — role USTADZ tidak otomatis dapat permission santri (kecuali yang eksplisit ✓ di atas).
+- Permission role SANTRI vs USTADZ terpisah — role USTADZ tidak otomatis dapat permission santri (kecuali yang eksplisit ✓ di atas).

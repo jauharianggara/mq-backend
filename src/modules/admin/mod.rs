@@ -59,22 +59,9 @@ async fn dashboard(cu: CurrentUser, State(st): State<AppState>) -> Result<Respon
          (SELECT COUNT(*) FROM users u JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id WHERE r.code = 'SANTRI' AND u.status = 'ACTIVE'), \
          (SELECT COUNT(*) FROM ustadz_profiles up JOIN users u ON u.id = up.user_id WHERE up.verified_at IS NOT NULL AND u.status = 'ACTIVE')")
         .fetch_one(&st.pool).await.map_err(dberr)?;
-    let (setoran_total, setoran_pending, setoran_passed, avg_review): (i64, i64, i64, Option<f64>) = sqlx::query_as(
-        "SELECT \
-         (SELECT COUNT(*) FROM memorization_submissions), \
-         (SELECT COUNT(*) FROM memorization_submissions WHERE status IN ('PENDING','IN_REVIEW')), \
-         (SELECT COUNT(*) FROM memorization_submissions WHERE status = 'PASSED'), \
-         (SELECT CAST(AVG(TIMESTAMPDIFF(MINUTE, submitted_at, reviewed_at)) AS DOUBLE) FROM memorization_submissions WHERE reviewed_at IS NOT NULL)")
-        .fetch_one(&st.pool).await.map_err(dberr)?;
     let (khatmil_active, khatmil_juz_done): (i64, i64) = sqlx::query_as(
         "SELECT (SELECT COUNT(*) FROM khatmil_campaigns WHERE status = 'ACTIVE'), \
          (SELECT COUNT(*) FROM khatmil_juz_assignments WHERE status = 'COMPLETED')")
-        .fetch_one(&st.pool).await.map_err(dberr)?;
-    let (q_total, q_answered, q_published, avg_answer_min): (i64, i64, i64, Option<f64>) = sqlx::query_as(
-        "SELECT (SELECT COUNT(*) FROM questions), \
-         (SELECT COUNT(*) FROM questions WHERE status IN ('ANSWERED','PUBLISH_REQUESTED','PUBLISHED')), \
-         (SELECT COUNT(*) FROM questions WHERE status = 'PUBLISHED'), \
-         (SELECT CAST(AVG(TIMESTAMPDIFF(MINUTE, q.created_at, (SELECT MIN(h.created_at) FROM question_status_history h WHERE h.question_id = q.id AND h.to_status = 'ANSWERED'))) AS DOUBLE) FROM questions q WHERE q.status IN ('ANSWERED','PUBLISH_REQUESTED','PUBLISHED'))")
         .fetch_one(&st.pool).await.map_err(dberr)?;
     // time-series aktivitas 7 hari (learning journey)
     let series: Vec<(String, i64)> = sqlx::query_as(
@@ -86,9 +73,7 @@ async fn dashboard(cu: CurrentUser, State(st): State<AppState>) -> Result<Respon
         .fetch_all(&st.pool).await.map_err(dberr)?;
     Ok(ok(json!({
         "users": { "active": users_total, "santri_active": santri_active, "ustadz_verified": ustadz_active },
-        "memorization": { "total": setoran_total, "pending": setoran_pending, "passed": setoran_passed, "avg_review_minutes": avg_review },
         "khatmil": { "campaigns_active": khatmil_active, "juz_completed": khatmil_juz_done },
-        "questions": { "total": q_total, "answered": q_answered, "published": q_published, "avg_answer_minutes": avg_answer_min },
         "activity_series_7d": series.into_iter().map(|(d, n)| json!({ "date": d, "events": n })).collect::<Vec<_>>(),
     }), StatusCode::OK))
 }

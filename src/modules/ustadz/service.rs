@@ -57,42 +57,6 @@ pub async fn put_specializations(pool: &MySqlPool, user_id: i64, req: PutSpecial
     Ok(())
 }
 
-pub async fn get_availability(pool: &MySqlPool, user_id: i64) -> Result<AvailabilityOut, AppError> {
-    ensure_profile(pool, user_id).await?;
-    let (accepting, maxq, verified): (i8, i64, i8) = sqlx::query_as(
-        "SELECT is_accepting_questions, max_active_questions, verified_at IS NOT NULL FROM ustadz_profiles WHERE user_id = ?")
-        .bind(user_id).fetch_one(pool).await.map_err(dberr)?;
-    Ok(AvailabilityOut { is_accepting_questions: accepting != 0, max_active_questions: maxq, verified: verified != 0 })
-}
-
-pub async fn put_availability(pool: &MySqlPool, user_id: i64, req: PutAvailabilityReq) -> Result<(), AppError> {
-    ensure_profile(pool, user_id).await?;
-    if !(1..=100).contains(&req.max_active_questions) {
-        return Err(AppError::Unprocessable("max_active_questions 1-100".into()));
-    }
-    sqlx::query("UPDATE ustadz_profiles SET is_accepting_questions = ?, max_active_questions = ? WHERE user_id = ?")
-        .bind(req.is_accepting_questions).bind(req.max_active_questions).bind(user_id)
-        .execute(pool).await.map_err(dberr)?;
-    Ok(())
-}
-
-pub async fn stats(pool: &MySqlPool, user_id: i64) -> Result<UstadzStats, AppError> {
-    ensure_profile(pool, user_id).await?;
-    let (total_reviewed, queue_pending_global, my_in_review, avg_min): (i64, i64, i64, Option<f64>) = sqlx::query_as(
-        "SELECT \
-           (SELECT COUNT(*) FROM memorization_submissions WHERE ustadz_id = ? AND status IN ('PASSED','REVISION','REJECTED')), \
-           (SELECT COUNT(*) FROM memorization_submissions WHERE status = 'PENDING' AND ustadz_id IS NULL), \
-           (SELECT COUNT(*) FROM memorization_submissions WHERE status = 'IN_REVIEW' AND ustadz_id = ?), \
-           (SELECT CAST(AVG(TIMESTAMPDIFF(MINUTE, submitted_at, reviewed_at)) AS DOUBLE) FROM memorization_submissions WHERE ustadz_id = ? AND reviewed_at IS NOT NULL)")
-        .bind(user_id).bind(user_id).bind(user_id)
-        .fetch_one(pool).await.map_err(dberr)?;
-    // tanya-ustadz (modul 9 menyusul) — placeholder agregat 0
-    Ok(UstadzStats {
-        total_reviewed, queue_pending_global, my_in_review, avg_review_minutes: avg_min,
-        questions_answered: 0, questions_pending: 0,
-    })
-}
-
 pub async fn get_detail(pool: &MySqlPool, user_id: i64) -> Result<crate::modules::ustadz::dto::UstadzDetailOut, AppError> {
     let r: (Option<String>, Option<String>) = sqlx::query_as(
         "SELECT pendidikan_terakhir, pengalaman_mengajar FROM ustadz_profiles WHERE user_id = ?")

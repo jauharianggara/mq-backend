@@ -12,7 +12,7 @@ info:
     - Semua response sukses = envelope `{ "data": ..., "meta": { } }`.
     - Semua error = `{ "code": "...", "message": "...", "details?": ... }` dengan HTTP 401/403/404/409/422/429/500.
     - Pagination feed/queue/inbox = **cursor**: `?limit=20&cursor=...` → `meta.pagination = { next_cursor, has_more }`.
-    - POST berbiaya (setoran, pesan) WAJIB header `Idempotency-Key` (disimpan `client_key` UNIQUE per user — replay 200, baru 201).
+    - POST berbiaya (pesan) WAJIB header `Idempotency-Key` (disimpan `client_key` UNIQUE per user — replay 200, baru 201).
     - Waktu = ISO-8601 UTC. ID = BIGINT.
     - Authorization: permission RBAC (`require_permission`), BUKAN role string — lihat docs/permissions.md.
 servers:
@@ -29,9 +29,7 @@ tags:
   - {name: auth, description: "Registrasi, login, token, verifikasi"}
   - {name: me, description: Profil & perangkat sendiri}
   - {name: quran, description: Data Al-Quran (read-only) + last-read/bookmark}
-  - {name: memorization, description: Setoran hafalan & review ustadz}
   - {name: khatmil, description: Khatmil/khataman campaign}
-  - {name: questions, description: Tanya ustadz + moderation}
   - {name: media, description: Upload object storage (presign 3-langkah)}
   - {name: notifications, description: Inbox notifikasi}
   - {name: admin, description: Endpoint admin (users/dashboard/settings/audit)}
@@ -255,9 +253,9 @@ paths:
   /me/progress/summary:
     get:
       tags: [me]
-      summary: Ringkasan progress (hafalan + baca) — dipakai profil santri
+      summary: Ringkasan progress baca — dipakai profil santri
       responses:
-        "200": { description: OK (agregat dari memorization_progress & reading)" }
+        "200": { description: "OK (agregat dari reading progress)" }
 
   /me/devices:
     get:
@@ -292,13 +290,13 @@ paths:
   /me/home:
     get:
       tags: [me]
-      summary: "Agregat Home santri (Bagian III M2.5): sapaan + last-read + progress hafalan + khatmil saya + counter jawaban + notif unread"
+      summary: "Agregat Home santri (Bagian III M2.5): sapaan + last-read + khatmil saya + notif unread"
       responses:
         "200": { description: "OK — cache 60s, invalidasi on-write" }
   /ustadz/me/home:
     get:
       tags: [me]
-      summary: "Agregat Home ustadz: queue setoran pending + pertanyaan belum dibalas (SLA) + notif + stats"
+      summary: "Agregat Home ustadz: notif unread + kunjungan"
       responses:
         "200": { description: OK }
 
@@ -319,32 +317,6 @@ paths:
               required: [category_ids]
               properties:
                 category_ids: {type: array, items: {type: integer}}
-      responses:
-        "200": { description: OK }
-  /me/ustadz/availability:
-    get:
-      tags: [me]
-      summary: "Availability (is_accepting_questions + max_active_questions)"
-      responses:
-        "200": { description: OK }
-    put:
-      tags: [me]
-      summary: Update availability
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [is_accepting_questions, max_active_questions]
-              properties:
-                is_accepting_questions: {type: boolean}
-                max_active_questions: {type: integer, minimum: 1, maximum: 100}
-      responses:
-        "200": { description: OK }
-  /ustadz/me/stats:
-    get:
-      tags: [me]
-      summary: Statistik ustadz (jawaban total, pending, avg response time)
       responses:
         "200": { description: OK }
 
@@ -450,83 +422,6 @@ paths:
         "200": { description: OK }
 
 
-  # ---------------- MEMORIZATION ----------------
-  /memorization/submissions:
-    post:
-      tags: [memorization]
-      summary: "Kirim setoran (media_id dari presign; header Idempotency-Key WAJIB)"
-      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string, maxLength: 64}}]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [surah_id, ayah_start, ayah_end, audio_media_id]
-              properties:
-                surah_id: {type: integer}
-                ayah_start: {type: integer}
-                ayah_end: {type: integer}
-                audio_media_id: {type: integer}
-                note: {type: string}
-      responses:
-        "201": { $ref: "#/components/responses/Created" }
-        "200": { description: "REPLAY idempotent (client_key sama)" }
-        "422": { $ref: "#/components/responses/Unprocessable" }
-  /me/submissions:
-    get:
-      tags: [memorization]
-      summary: Riwayat setoran sendiri
-      parameters: [{name: limit, in: query, schema: {type: integer}}, {name: cursor, in: query, schema: {type: string}}]
-      responses:
-        "200": { description: OK }
-  /me/submissions/{id}:
-    get:
-      tags: [memorization]
-      summary: Detail setoran (+ presigned URL audio + feedback ustadz)
-      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
-      responses:
-        "200": { description: "OK — ACL: pemilik / ustadz berhak / admin" }
-        "404": { $ref: "#/components/responses/NotFound" }
-  /me/memorization/progress:
-    get:
-      tags: [memorization]
-      summary: Rollup progress hafalan per surah
-      responses:
-        "200": { description: OK }
-  /ustadz/memorization/queue:
-    get:
-      tags: [memorization]
-      summary: "Antrean review (cursor; default PENDING tanpa ustadz + IN_REVIEW milik saya)"
-      parameters:
-        - {name: status, in: query, schema: {type: string, enum: [PENDING, IN_REVIEW]}}
-        - {name: limit, in: query, schema: {type: integer, default: 20}}
-        - {name: cursor, in: query, schema: {type: string}}
-      responses:
-        "200": { description: OK }
-        "403": { $ref: "#/components/responses/Forbidden" }
-  /memorization/submissions/{id}/review:
-    post:
-      tags: [memorization]
-      summary: "Submit review: PENDING→IN_REVIEW (claim) atau verdict PASSED/REVISION/REJECTED (+notes/voice)"
-      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [action]
-              properties:
-                action: {type: string, enum: [CLAIM, SUBMIT]}
-                verdict: {type: string, enum: [PASSED, REVISION, REJECTED]}
-                notes: {type: string}
-                reply_audio_media_id: {type: integer}
-      responses:
-        "200": { description: OK — trigger notif santri + activity_event }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-
   # ---------------- KHATMIL ----------------
   /khatmil/campaigns:
     get:
@@ -615,139 +510,6 @@ paths:
       tags: [khatmil]
       summary: Peserta campaign (admin/moderasi)
       parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
-      responses:
-        "200": { description: OK }
-
-  # ---------------- QUESTIONS ----------------
-  /question-categories:
-    get:
-      tags: [questions]
-      summary: Kategori tanya (public)
-      security: []
-      responses:
-        "200": { description: OK }
-  /questions:
-    post:
-      tags: [questions]
-      summary: Buat pertanyaan (anonim opsional; auto-assign least-load per kategori)
-      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [category_id, title]
-              properties:
-                category_id: {type: integer}
-                title: {type: string, minLength: 5, maxLength: 200}
-                body: {type: string}
-                is_anonymous: {type: boolean, default: false}
-      responses:
-        "201": { $ref: "#/components/responses/Created" }
-        "403": { $ref: "#/components/responses/Forbidden" }
-  /me/questions:
-    get:
-      tags: [questions]
-      summary: Pertanyaan saya (identitas selalu tampil utk pemilik)
-      parameters: [{name: limit, in: query, schema: {type: integer}}, {name: cursor, in: query, schema: {type: string}}]
-      responses:
-        "200": { description: OK }
-  /questions/{id}:
-    get:
-      tags: [questions]
-      summary: "Detail thread (ACL: pemilik [identitas penuh] / ustadz assigned [anonim bila is_anonymous] / moderator / admin)"
-      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
-      responses:
-        "200": { description: OK }
-        "404": { $ref: "#/components/responses/NotFound" }
-  /questions/{id}/messages:
-    post:
-      tags: [questions]
-      summary: Kirim pesan (TEXT/VOICE/IMAGE/FILE; voice/gambar via media_id presign; Idempotency-Key)
-      parameters:
-        - {name: id, in: path, required: true, schema: {type: integer}}
-        - {name: Idempotency-Key, in: header, required: true, schema: {type: string}}
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [type]
-              properties:
-                type: {type: string, enum: [TEXT, VOICE, IMAGE, FILE]}
-                content: {type: string}
-                media_id: {type: integer}
-                duration_ms: {type: integer}
-      responses:
-        "201": { $ref: "#/components/responses/Created" }
-  /questions/{id}/close:
-    post:
-      tags: [questions]
-      summary: Tutup pertanyaan (pemilik)
-      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
-      responses:
-        "200": { description: OK }
-  /questions/{id}/answer:
-    post:
-      tags: [questions]
-      summary: Finalisasi jawaban ustadz (status → ANSWERED)
-      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
-      responses:
-        "200": { description: OK — trigger notif santri }
-  /questions/{id}/publish-request:
-    post:
-      tags: [questions]
-      summary: "Minta publikasi (status → PUBLISH_REQUESTED — TIDAK langsung PUBLISHED)"
-      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
-      responses:
-        "200": { description: OK }
-  /ustadz/questions/inbox:
-    get:
-      tags: [questions]
-      summary: Inbox ustadz (ASSIGNED ke saya)
-      parameters: [{name: limit, in: query, schema: {type: integer}}, {name: cursor, in: query, schema: {type: string}}]
-      responses:
-        "200": { description: OK }
-  /questions/archive:
-    get:
-      tags: [questions]
-      summary: Arsip publik (PUBLISHED) + disclaimer; search FULLTEXT q=
-      security: []
-      parameters:
-        - {name: q, in: query, schema: {type: string}}
-        - {name: category, in: query, schema: {type: string}}
-        - {name: limit, in: query, schema: {type: integer}}
-        - {name: cursor, in: query, schema: {type: string}}
-      responses:
-        "200": { description: OK }
-  /questions/moderation:
-    get:
-      tags: [questions]
-      summary: Antrean moderation (PUBLISH_REQUESTED dkk — question.moderate)
-      parameters: [{name: status, in: query, schema: {type: string}}]
-      responses:
-        "200": { description: OK }
-  /questions/{id}/publish:
-    post:
-      tags: [questions]
-      summary: Approve publish (question.publish.moderate → PUBLISHED + disclaimer + audit)
-      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
-      responses:
-        "200": { description: OK }
-  /questions/{id}/reject-publish:
-    post:
-      tags: [questions]
-      summary: Reject publish (→ REJECTED + alasan audit)
-      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                reason: {type: string}
       responses:
         "200": { description: OK }
 
@@ -854,7 +616,7 @@ paths:
   /admin/dashboard:
     get:
       tags: [admin]
-      summary: "Dashboard agregat (dashboard.view): santri aktif, time-series ngaji (activity_events), khatmil progress, SLA tanya"
+      summary: "Dashboard agregat (dashboard.view): santri aktif, time-series ngaji (activity_events), khatmil progress"
       responses:
         "200": { description: OK }
   /admin/settings:

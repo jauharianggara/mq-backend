@@ -102,18 +102,11 @@ C:\mq\nssm\nssm.exe restart MQ-SeaweedFS
 ## Reset Dev Data (HATI-HATI)
 ```sql
 -- hapus semua data uji (JANGAN di produksi!)
-DELETE FROM memorization_submissions;
-DELETE FROM memorization_reviews;
-DELETE FROM memorization_progress;
 DELETE FROM khatmil_progress_events;
 DELETE FROM khatmil_progress;
 DELETE FROM khatmil_juz_assignments;
 DELETE FROM khatmil_participants;
 DELETE FROM khatmil_campaigns;
-DELETE FROM question_status_history;
-DELETE FROM question_assignments;
-DELETE FROM question_messages;
-DELETE FROM questions;
 DELETE FROM activity_events;
 DELETE FROM audit_logs;
 DELETE FROM user_notifications;
