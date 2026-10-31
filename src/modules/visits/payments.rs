@@ -633,6 +633,7 @@ pub async fn admin_list_payouts(
     let cursor: Option<i64> = if srt.custom { None } else { cursor };
     let mut sql = format!(
         "SELECT pr.id, pr.ustadz_id, pr.amount, pr.fee, pr.bank_name, pr.bank_account_no, pr.bank_account_name, pr.status, \
+         pr.rejected_reason, \
          COALESCE(NULLIF(up.full_name, ''), '(tanpa nama)'), \
          DATE_FORMAT(pr.created_at, '%Y-%m-%dT%H:%i:%sZ') \
          FROM payout_requests pr \
@@ -643,7 +644,7 @@ pub async fn admin_list_payouts(
     if srt.custom {
         sql.push_str(" OFFSET ?");
     }
-    let mut qy = sqlx::query_as::<_, (i64, i64, i64, i64, String, String, String, String, String, String)>(&sql)
+    let mut qy = sqlx::query_as::<_, (i64, i64, i64, i64, String, String, String, String, Option<String>, String, String)>(&sql)
         .bind(status).bind(status).bind(cursor).bind(cursor).bind(limit + 1);
     if srt.custom {
         qy = qy.bind((page.unwrap_or(1) - 1) * limit);
@@ -655,7 +656,8 @@ pub async fn admin_list_payouts(
     for r in rows.into_iter().take(limit as usize) {
         out.push(serde_json::json!({
             "id": r.0, "ustadz_id": r.1, "amount": r.2, "fee": r.3, "bank_name": r.4,
-            "account_no": r.5, "account_name": r.6, "status": r.7, "ustadz_name": r.8, "created_at": r.9,
+            "account_no": r.5, "account_name": r.6, "status": r.7, "rejected_reason": r.8,
+            "ustadz_name": r.9, "created_at": r.10,
         }));
     }
     Ok((out, next, has_more))
